@@ -1,10 +1,7 @@
 package scalan.sql.meta
 
-import scalan.meta._
 import scalan.meta.ScalanAst.SEntityModuleDef
-
-object SqlCodegen extends MetaCodegen {
-}
+import scalan.meta._
 
 class SqlEntityFileGenerator(codegen: MetaCodegen, module: SEntityModuleDef, config: CodegenConfig)
   extends EntityFileGenerator(codegen, module, config) {
@@ -22,8 +19,7 @@ object SqlBoilerplateTool extends BoilerplateTool {
     name = "sql",
     srcPath = "scalan-sql-core/src/main/scala",
     entityFiles = List(
-      "scalan/sql/Iters.scala"//,
-//      "scalan/sql/aspendb/Responses.scala"
+      "scalan/sql/Iters.scala"
     ),
     baseContextTrait = "Scalan",
     seqContextTrait = "ScalanStd",

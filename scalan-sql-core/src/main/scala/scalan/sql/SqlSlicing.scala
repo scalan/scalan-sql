@@ -1,16 +1,8 @@
 package scalan.sql
 
-import scala.collection.mutable
-import scalan.common.Lazy
-import scalan.util.CollectionUtil
-import scalan._
+import scalan.staged.Slicing
 
-trait SqlSlicing extends Slicing { ctx: ScalanSql => }
-
-trait SqlSlicingStd extends SlicingStd { ctx: ScalanSqlStd => }
-
-
-trait SqlSlicingExp extends SlicingExp { ctx: ScalanSqlExp =>
+trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
   protected def createSliceAnalyzer: SliceAnalyzer = new SqlSliceAnalyzer
 
   class SqlSliceAnalyzer extends SliceAnalyzer {

@@ -8,7 +8,7 @@ import scala.reflect.runtime.universe._
 /**
   * Use this traits for the top level scalan.sql extensions, customizations and overrides
   */
-trait ScalanSql extends ScalanDsl with ItersDsl with Analyzing with SqlSlicing {
+trait ScalanSql extends ScalanDsl with ItersDsl {
   implicit val DateElement: Elem[Date] = new BaseElem()(weakTypeTag[Date], null)
   implicit val DateOrdering: Ordering[Date] = Ordering.by(_.getTime)
 
@@ -41,8 +41,8 @@ trait ScalanSql extends ScalanDsl with ItersDsl with Analyzing with SqlSlicing {
   def toPlatformString[A](x: Rep[A]): Rep[String]
 }
 
-trait ScalanSqlStd extends ScalanDslStd with ItersDslStd with AnalyzingStd with SqlSlicingStd with ScalanSql
-trait ScalanSqlExp extends ScalanDslExp with ItersDslExp with AnalyzingExp with SqlSlicingExp with ScalanSql {
+trait ScalanSqlStd extends ScalanDslStd with ItersDslStd with ScalanSql
+trait ScalanSqlExp extends ScalanDslExp with ItersDslExp with ScalanSql with SqlSlicing {
 
 }
 
