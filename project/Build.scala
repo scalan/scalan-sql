@@ -99,7 +99,8 @@ object ScalanSqlRootBuild extends Build {
 
   publishArtifact in Test := true
 
-  publishArtifact in (Test, packageDoc) := false
+  // do not publish docs for snapshot versions
+  publishArtifact in packageDoc := !version.value.trim.endsWith("SNAPSHOT")
 
   publishTo in ThisBuild := {
     val nexus = "http://10.122.85.37:9081/nexus/"
