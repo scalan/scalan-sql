@@ -93,9 +93,7 @@ object ScalanSqlRootBuild extends Build {
     id = "scalan-sql",
     base = file(".")).addTestConfigsAndCommonSettings
       .aggregate(meta, core)
-      .settings(
-        libraryDependencies ++= Seq(scalanCore, scalanCore % "test" classifier "tests"),
-        publishArtifact := false)
+      .settings(publishArtifact := false)
 
   publishArtifact in Test := true
 
