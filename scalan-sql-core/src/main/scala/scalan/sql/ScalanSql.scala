@@ -43,6 +43,7 @@ trait ScalanSql extends ScalanDsl with ItersDsl {
 
 trait ScalanSqlStd extends ScalanDslStd with ItersDslStd with ScalanSql
 trait ScalanSqlExp extends ScalanDslExp with ItersDslExp with ScalanSql with SqlSlicing {
-
+  def toPlatformString[A](x: Rep[A]): Rep[String] = ToString1[A]()(x)
+  case class ToString1[A]() extends UnOp[A, String]("toPlatformString", _.toString)
 }
 
