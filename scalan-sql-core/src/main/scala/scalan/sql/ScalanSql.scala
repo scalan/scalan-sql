@@ -46,4 +46,3 @@ trait ScalanSqlExp extends ScalanDslExp with ItersDslExp with ScalanSql with Sql
   def toPlatformString[A](x: Rep[A]): Rep[String] = ToString1[A]()(x)
   case class ToString1[A]() extends UnOp[A, String]("toPlatformString", _.toString)
 }
-

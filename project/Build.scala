@@ -12,9 +12,8 @@ object ScalanSqlRootBuild extends Build {
     parallelExecution in Test := false,
     parallelExecution in IntegrationTest := false,
     publishArtifact in Test := true,
-    javaOptions in Test ++= Seq("-Xmx10G", "-Xms5G"),
-    fork in IntegrationTest := true,
-    publishArtifact in(Test, packageDoc) := false
+    javaOptions in IntegrationTest ++= Seq("-Xmx10G", "-Xms5G"),
+    fork in IntegrationTest := true
   )
 
   val buildSettings = Seq(
@@ -38,6 +37,7 @@ object ScalanSqlRootBuild extends Build {
   lazy val commonSettings =
     buildSettings ++ testSettings ++
       Seq(
+      publishArtifact in packageDoc := !version.value.trim.endsWith("SNAPSHOT"),
       resolvers += "Scalaz Bintray Repo" at "http://dl.bintray.com/scalaz/releases",
       publishTo := {
         val nexus = "http://10.122.85.37:9081/nexus/"
@@ -64,21 +64,23 @@ object ScalanSqlRootBuild extends Build {
   lazy val scalanCore        = scalanDependency("scalan-core")
   lazy val scalanLua         = scalanDependency("scalan-lua-backend-core")
 
+  lazy val testQueries = Project(id = "scalan-sql-test-queries", base = file("scalan-sql-test-queries")).
+    settings(commonSettings: _*)
+
+  lazy val parser = Project(
+    id = "scalan-sql-parser",
+    base = file("scalan-sql-parser")).addTestConfigsAndCommonSettings.
+    settings(libraryDependencies ++= Seq(
+      "org.scala-lang.modules" %% "scala-parser-combinators" % "1.0.4",
+      scalanCommon % "test" classifier "tests",
+      scalanMeta
+    )).dependsOn(testQueries % "test->test")
+
   lazy val meta = Project(
     id = "scalan-sql-meta",
     base = file("scalan-sql-meta")).addTestConfigsAndCommonSettings.
-    settings(fork in run := true, libraryDependencies ++= Seq(scalanMeta))
-
-//  lazy val rt = Project(
-//    id = "scalan-sql-rt",
-//    base = file("scalan-sql-rt")).addTestConfigsAndCommonSettings.
-//    settings(fork in run := true, libraryDependencies ++= Seq(scalanCommon))
-
-//  lazy val parser = Project(
-//    id = "scalan-sql-parser",
-//    base = file("scalan-sql-parser")).addTestConfigsAndCommonSettings.
-//    settings(libraryDependencies ++= Seq(scalanMeta, scalanCommon,
-//      "org.scala-lang.modules" %% "scala-parser-combinators" % "1.0.4"))
+    settings(fork in run := true, libraryDependencies ++= Seq(scalanMeta)).
+    dependsOn(parser)
 
   lazy val core = Project(
     id = "scalan-sql-core",
@@ -86,19 +88,14 @@ object ScalanSqlRootBuild extends Build {
     settings(libraryDependencies ++= Seq(
       scalanCommon, scalanCommon % "test" classifier "tests",
       scalanCore, scalanCore % "test" classifier "tests",
-      scalanLua, scalanLua % "test" classifier "tests"
-    ))
+      scalanLua
+    )).dependsOn(parser, testQueries % "test->test")
 
   lazy val root = Project(
     id = "scalan-sql",
     base = file(".")).addTestConfigsAndCommonSettings
-      .aggregate(meta, core)
+      .aggregate(testQueries, parser, meta, core)
       .settings(publishArtifact := false)
-
-  publishArtifact in Test := true
-
-  // do not publish docs for snapshot versions
-  publishArtifact in packageDoc := !version.value.trim.endsWith("SNAPSHOT")
 
   publishTo in ThisBuild := {
     val nexus = "http://10.122.85.37:9081/nexus/"

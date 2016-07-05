@@ -4,9 +4,7 @@ import java.lang.reflect.Method
 import scalan._
 import scalan.common.Lazy
 import scalan.sql._
-import scalan.util.CollectionUtil
 import scala.reflect.runtime.universe._
-import scalan.meta.SqlAST.JoinType
 import scalan.common.Default
 
 package impl {

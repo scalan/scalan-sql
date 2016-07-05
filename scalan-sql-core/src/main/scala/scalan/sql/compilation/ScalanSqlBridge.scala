@@ -4,8 +4,8 @@ import java.sql.Date
 
 import scala.annotation.tailrec
 import scala.runtime.IntRef
-import scalan.meta.SqlAST._
-import scalan.meta.{SqlAST, SqlCompiler}
+import scalan.sql.parser.{SqlAST, SqlResolver}
+import SqlAST._
 import scalan.sql.{ScalanSqlExp}
 
 class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
@@ -22,15 +22,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case TimestampType => TimestampElement
   }
 
-  protected def initSqlParser(p: SqlCompiler): Unit = {}
+  protected def initSqlResolver(p: SqlResolver): Unit = {}
 
-  private val sqlParser = {
-    val parser = new SqlCompiler
-    initSqlParser(parser)
-    parser
-  }
+  private val resolver = new SqlResolver
+  initSqlResolver(resolver)
 
-  private def currentScopeName = sqlParser.currScope.name
+  private def currentScopeName = resolver.currScope.name
 
   protected def getFakeDepName: String = "!_fake_dep_!"
 
@@ -38,7 +35,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   private val fakeDepField = (fakeDepName, IntElement)
 
   private val tableElems: Map[String, StructElem[Struct]] = {
-    sqlParser.parseDDL(ddl).collect {
+    resolver.parseDDL(ddl).collect {
       case CreateTableStmt(table) =>
         val fieldElems =
           table.schema.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) } :+ fakeDepField
@@ -47,14 +44,20 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }.toMap
 
   private def withContext[A](p: Operator)(block: => A) = {
-    sqlParser.pushContext(p)
+    resolver.pushContext(p)
     val result = block
-    sqlParser.popContext()
+    resolver.popContext()
     result
   }
 
+  // could be moved into ExprInputs, but this allows to avoid accidental reuse (see assert below)
+  // Plus ExprInputs would have to be threaded through more than now
+  private var reuseDetector = true
+
   def sqlQueryExp(query: String) = {
-    val parsedSql = sqlParser.parseSelect(query).operator
+    assert(reuseDetector, "Instance of ScalanSqlBridge is being reused, please create a new one (based on a separate Scalan cake) for each query instead")
+    reuseDetector = false
+    val parsedSql = resolver.parseSelect(query).operator
     val tables = allTables(parsedSql).toSeq.distinct
 
     val inputRowElems = tables.map {
@@ -139,8 +142,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               case BinOpExpr(SqlAST.And, l, r) =>
                 columns(l) ++ columns(r)
               case BinOpExpr(Eq, l: ColumnRef, r: ColumnRef) =>
-                val bindingL = sqlParser.lookup(l)
-                val bindingR = sqlParser.lookup(r)
+                val bindingL = resolver.lookup(l)
+                val bindingR = resolver.lookup(r)
                 bindingL.scope match {
                   case OuterScopeName =>
                     if (bindingR.scope == InnerScopeName)
@@ -199,14 +202,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case Join(outer, inner, joinType, joinSpec) =>
       generateJoin(outer, inner, joinType, joinSpec, inputs)
     case ScanOrScanAlias(iterName, table) =>
-      def findInput(scope: sqlParser.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
-        scope.outer match {
-          case None => !!!("No input found, should never happen")
-          case Some(scope1) => findInput(scope1)
-        }
-      })
-      val currentLambdaArg = findInput(sqlParser.currScope)
-
       def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
         case se: StructElem[_] =>
           val x1 = x.asRep[Struct]
@@ -227,6 +222,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         case _ =>
           None
       }
+
+      val currentLambdaArg = this.currentLambdaArg(inputs)
       val fakeDep = findFakeDep(currentLambdaArg).getOrElse {
         !!!(s"Can't find $fakeDepName in ${currentLambdaArg.toStringWithType}")
       }
@@ -247,7 +244,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
 
     case Filter(p, predicate) =>
-      val (joins, conjuncts) = sqlParser.optimize(p, predicate)
+      val (joins, conjuncts) = resolver.optimize(p, predicate)
       val joinsExp = generateOperator(joins, inputs)
       conjuncts match {
         case Literal(_, _) => // Is this right?
@@ -260,7 +257,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case Project(p, columns) =>
       withContext(p) {
         val pExp = generateOperator(p, inputs)
-        columns.find(sqlParser.isAggregate) match {
+        columns.find(resolver.isAggregate) match {
           case None =>
             pExp.elem.asInstanceOf[IterElem[_, _]].eRow match {
               case eRow: Elem[row] =>
@@ -269,7 +266,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 callMethod(pExp, eRes, "map", structLambda)
             }
           case Some(aggColumn) =>
-            columns.find(c => !sqlParser.isAggregate(c)) match {
+            columns.find(c => !resolver.isAggregate(c)) match {
               case None =>
                 generateAggregate(columns, Nil, pExp, inputs)
               case Some(nonAggColumn) =>
@@ -284,6 +281,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       generateOperator(p, inputs)
     case _ =>
       ???(s"Failed to construct Scalan graph from SQL AST $op")
+  }
+
+  private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
+    def findInput(scope: resolver.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
+      scope.outer match {
+        case None => !!!("No input found, should never happen")
+        case Some(scope1) => findInput(scope1)
+      }
+    })
+    findInput(resolver.currScope)
   }
 
   def generateAggregate(columns: List[ProjectionColumn], groupedBy: List[Expression], pExp: Exp[_], inputs: ExprInputs) = {
@@ -409,7 +416,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         val name = this.name(column, unnamedCounter)
         // Each column is assumed to be contained in `by` or in `aggregates`.
         // Possibility that it's uniquely determined by `by` isn't covered currently.
-        val fieldValue = groupedBy.indexWhere(sqlParser.matchExpr(_, column.alias, column.expr)) match {
+        val fieldValue = groupedBy.indexWhere(resolver.matchExpr(_, column.alias, column.expr)) match {
           case -1 =>
             try {
               generateExpr(column.expr, ExprInputs(aggregates, value))
@@ -595,7 +602,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
 
   def getExprType(expr: Expression): Elem[_] = {
-    sqlTypeToElem(sqlParser.getExprType(expr))
+    sqlTypeToElem(resolver.getExprType(expr))
   }
 
   private def getOrdering[T](e: Elem[T]): Ordering[T] = (e.asInstanceOf[TypeDesc] match {
@@ -721,7 +728,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     // TODO inline
     def resolveColumn(c: ColumnRef) = {
-      val binding = sqlParser.lookup(c)
+      val binding = resolver.lookup(c)
       scopes.get(binding.scope) match {
         case None =>
           !!!(s"Failed to resolve ${c.asString}. Binding is $binding.")
@@ -860,6 +867,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case Literal(v, t) =>
       val elem = sqlTypeToElem(t)
       toRep(v)(elem.asElem[Any])
+    case NullLiteral =>
+      !!!("Nulls aren't supported")
+      // if we ever support null, how to determine type here?
+      // toRep(null: Any)(AnyElement)
     case CastExpr(exp, typ) =>
       generateExpr(exp, inputs) match {
         case exprExp: Exp[a] =>
