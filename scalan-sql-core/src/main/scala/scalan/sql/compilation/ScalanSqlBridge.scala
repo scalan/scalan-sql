@@ -286,8 +286,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
     def findInput(scope: resolver.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
       scope.outer match {
-        case None => !!!("No input found, should never happen")
-        case Some(scope1) => findInput(scope1)
+        case None =>
+          !!!("Current lambda argument not found, should never happen")
+        case Some(scope1) =>
+          findInput(scope1)
       }
     })
     findInput(resolver.currScope)
@@ -419,7 +421,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         val fieldValue = groupedBy.indexWhere(resolver.matchExpr(_, column.alias, column.expr)) match {
           case -1 =>
             try {
-              generateExpr(column.expr, ExprInputs(aggregates, value))
+              generateExpr(column.expr, ExprInputs(inputs.scopes, aggregates, value))
             } catch {
               case AggregateNotFound(agg, list) =>
                 !!!(s"Aggregate $agg is part of $column but not found among aggregate values", trackSyms: _*)
@@ -864,9 +866,17 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       !callMethod(generateExpr(q, inputs), BooleanElement, "isEmpty")
     case LikeExpr(l, r, escape) =>
       patternMatch(l, r, escape, inputs)
-    case Literal(v, t) =>
+    case l @ Literal(v, t) =>
       val elem = sqlTypeToElem(t)
-      toRep(v)(elem.asElem[Any])
+      // non-null literals in queries are replaced by parameters
+      val currentLambdaArg = this.currentLambdaArg(inputs)
+      l.index match {
+        case Some(i) =>
+          Parameter(i, currentLambdaArg, v)(elem)
+        case None =>
+          toRep(v)(elem.asElem[Any])
+      }
+
     case NullLiteral =>
       !!!("Nulls aren't supported")
       // if we ever support null, how to determine type here?
@@ -923,7 +933,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       // see https://www.sqlite.org/lang_datefunc.html
       // current support is very incomplete
       argExps(0) match {
-        case Def(Const(format: String)) =>
+        case Def(Parameter(_, _, format: String)) =>
           val timeString = argExps(1).asRep[String]
           format match {
             case "%Y" =>

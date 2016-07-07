@@ -1,6 +1,7 @@
 package scalan.sql.parser
 
 import scala.reflect.{ClassTag, classTag}
+import scala.util.parsing.input.Positional
 
 object SqlAST {
 
@@ -220,7 +221,11 @@ object SqlAST {
 
   case class CastExpr(expr: Expression, to: ColumnType) extends Expression
 
-  case class Literal(value: Any, tp: ColumnType) extends Expression
+  case class Literal(value: Any, tp: ColumnType) extends Expression with Positional {
+    // set in SqlParser.select
+    var index: Option[Int] = None
+  }
+
   case object NullLiteral extends Expression
 
   // FIXME CaseWhenExpr(operand: Option[Expression], cases: List[(Expression, Expression)], default: Option[Expression])

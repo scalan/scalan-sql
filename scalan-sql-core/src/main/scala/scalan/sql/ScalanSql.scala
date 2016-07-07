@@ -45,4 +45,7 @@ trait ScalanSqlStd extends ScalanDslStd with ItersDslStd with ScalanSql
 trait ScalanSqlExp extends ScalanDslExp with ItersDslExp with ScalanSql with SqlSlicing {
   def toPlatformString[A](x: Rep[A]): Rep[String] = ToString1[A]()(x)
   case class ToString1[A]() extends UnOp[A, String]("toPlatformString", _.toString)
+
+  // ctx ensures parameters are read inside lambdas only
+  case class Parameter[A](index: Int, ctx: Exp[_], value: Any)(implicit val selfType: Elem[A]) extends Def[A]
 }

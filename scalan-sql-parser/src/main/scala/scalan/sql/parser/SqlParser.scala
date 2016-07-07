@@ -5,8 +5,9 @@ import scala.util.parsing.combinator.PackratParsers
 import scala.util.parsing.combinator.lexical.StdLexical
 import scala.util.parsing.combinator.syntactical.StandardTokenParsers
 import scala.util.parsing.input.CharArrayReader.EofCh
-
 import SqlAST._
+import scala.util.Sorting
+import scala.util.parsing.input.NoPosition
 
 // see http://savage.net.au/SQL/sql-2003-2.bnf.html for full SQL grammar
 class SqlParser {
@@ -199,7 +200,19 @@ class SqlParser {
     }
 
     def select(sql: String): SelectStmt = phrase(selectStmt)(new lexical.Scanner(sql)) match {
-      case Success(res, _) => res
+      case Success(res, _) =>
+        def allLiterals(x: Any): Iterator[Literal] = x match {
+          case l: Literal => Iterator(l)
+          case p: Product => p.productIterator.flatMap(allLiterals)
+          case _ => Iterator.empty
+        }
+
+        val literals = allLiterals(res).filter(_.pos != NoPosition).toArray
+        Sorting.quickSort(literals)(Ordering.fromLessThan(_.pos < _.pos))
+        for (i <- literals.indices) {
+          literals(i).index = Some(i)
+        }
+        res
       case res => throw SqlException(res.toString)
     }
 
@@ -539,12 +552,15 @@ class SqlParser {
       CAST ~ "(" ~> expression ~ (AS ~> columnType) <~ ")" ^^ { case exp ~ t => CastExpr(exp, t)}
 
     protected lazy val literal: Parser[Expression] =
-      (numericLiteral
-        | booleanLiteral
-        | stringLit ^^ { case s => Literal(s, BasicStringType) }
+      (basicLiteral
         | NULL ^^^ NullLiteral
         | (CURRENT_DATE | CURRENT_TIME | CURRENT_TIMESTAMP) ^^ { kw => FuncExpr(kw.str.toLowerCase, Nil) }
         )
+
+    protected lazy val basicLiteral: Parser[Literal] =
+      positioned(numericLiteral
+        | booleanLiteral
+        | stringLit ^^ { case s => Literal(s, BasicStringType) })
 
     protected lazy val booleanLiteral: Parser[Literal] =
       (TRUE ^^^ Literal(true, BoolType)

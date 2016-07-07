@@ -116,6 +116,10 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
         case Clone(x) =>
           Seq[MarkedSym](x.marked(outMark))
 
+        // Parameter doesn't really depend on its argument
+        case Parameter(_, _, _) =>
+          Seq.empty
+
         case _ =>
           super.getInboundMarkings(te, outMark)
       }
@@ -150,6 +154,8 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
   override def rewriteDef[T](d: Def[T]): Exp[_] = d match {
     case Clone(IsSliced(p, m)) =>
       Sliced(clone(p), m)
+    case Parameter(index, IsSliced(p, m), value) =>
+      Parameter(index, p, value)(d.selfType)
 
     case _ => super.rewriteDef(d)
   }
