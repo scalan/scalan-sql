@@ -231,8 +231,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       inputs(iterName).asInstanceOf[RFunc[Int, Iter[_]]](fakeDep)
     case OrderBy(p, by) =>
       val pExp = generateOperator(p, inputs)
-      val comparator = generateComparator(p, by, inputs)(pExp.elem.asInstanceOf[IterElem[_, _]].eRow)
-      callMethod(pExp, pExp.elem, "sortBy", comparator)
+      val eRow = pExp.elem.asInstanceOf[IterElem[_, _]].eRow
+      val materialized = callMethod(pExp, pExp.elem, "materialize", cloneFun(eRow))
+      val comparator = generateComparator(p, by, inputs)(eRow)
+      callMethod(materialized, pExp.elem, "sortBy", comparator)
     case GroupBy(agg, by) =>
       agg match {
         case Project(p, columns) =>
