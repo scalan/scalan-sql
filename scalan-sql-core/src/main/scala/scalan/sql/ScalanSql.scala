@@ -40,6 +40,8 @@ trait ScalanSql extends ScalanDsl with ItersDsl {
   // same as ToString, but without rewriting (x: String).toString => x
   // this way it can be used to generate to_lua_string in the end
   def toPlatformString[A](x: Rep[A]): Rep[String]
+
+  val MaterializeKey = MetaKey[Unit]("materialize")
 }
 
 trait ScalanSqlStd extends ScalanDslStd with ItersDslStd with ScalanSql

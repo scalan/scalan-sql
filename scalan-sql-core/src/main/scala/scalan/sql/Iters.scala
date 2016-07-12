@@ -4,7 +4,6 @@ import java.lang.reflect.Method
 
 import scalan._
 import scalan.common.Lazy
-import scalan.sql._
 import scala.reflect.runtime.universe._
 
 trait Iters extends ScalanDsl {
@@ -17,6 +16,8 @@ trait Iters extends ScalanDsl {
 
     def map[B](f: Rep[Row => B]): RIter[B]
 
+    def mapU[B](f: Rep[((B, Row)) => Unit], init: Rep[Thunk[B]]): RIter[B]
+
     def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B]
 
     def filter(f: Rep[Row => Boolean]): RIter[Row]
@@ -24,6 +25,8 @@ trait Iters extends ScalanDsl {
     def isEmpty: Rep[Boolean]
 
     def reduce[B](f: Rep[((B, Row)) => B], init: Rep[Thunk[B]]): RIter[B]
+
+    def reduceU[B](f: Rep[((B, Row)) => Unit], init: Rep[Thunk[B]]): RIter[B]
 
     /**
       * @param packKey serialize key into string preserving uniqueness
@@ -36,11 +39,20 @@ trait Iters extends ScalanDsl {
                         reduceValue: Rep[((V, Row)) => V]
                        ): RIter[Struct]
 
+    def mapReduceU[K, V](mapKey: Rep[Row => K],
+                         packKey: Rep[Row => String],
+                         newValue: Rep[Thunk[V]],
+                         reduceValue: Rep[((V, Row)) => Unit]
+                        ): RIter[Struct]
+
     def sortBy(comparator: Rep[((Row, Row)) => Int]): RIter[Row]
 
     def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)]
 
     def toArray: Arr[Row]
+
+    // always called with Clone and equivalent to `map`, but semantically different
+    def materialize(f: Rep[Row => Row]): RIter[Row]
   }
   trait IterCompanion {
     def empty[Row: Elem]: Rep[Iter[Row]] = externalMethod("IterCompanion", "empty")
@@ -139,13 +151,17 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "sortBy" =>
+        case "filter" | "sortBy" | "materialize" =>
           receiver.elem
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]
           val eB = f.elem.asInstanceOf[FuncElem[_, _]].eRange
           iterElement(eB)
-        case "mapReduce" =>
+        case "mapU" =>
+          val f = args(0).asInstanceOf[Exp[_]]
+          val eB = f.elem.asInstanceOf[FuncElem[_, _]].eDom.asInstanceOf[PairElem[_, _]].eFst
+          iterElement(eB)
+        case "mapReduce" | "mapReduceU" =>
           val mapKey = args(0).asInstanceOf[Exp[_]]
           val newValue = args(2).asInstanceOf[Exp[_]]
           val eK = mapKey.elem.asInstanceOf[FuncElem[_, _]].eRange
