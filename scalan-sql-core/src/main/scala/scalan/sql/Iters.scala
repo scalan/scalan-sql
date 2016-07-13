@@ -46,6 +46,8 @@ trait Iters extends ScalanDsl {
                          reduceValue: Rep[((V, Row)) => Unit]
                         ): RIter[Struct]
 
+    // sort takes a less-than predicate, sortBy takes an Ordering.compare-like function
+    def sort(comparator: Rep[((Row, Row)) => Boolean]): RIter[Row]
     def sortBy(comparator: Rep[((Row, Row)) => Int]): RIter[Row]
 
     def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)]
@@ -152,7 +154,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "sortBy" | "materialize" =>
+        case "filter" | "sort" | "sortBy" | "materialize" =>
           receiver.elem
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]
@@ -280,6 +282,15 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       assert(eS == sp.elem.eDom.eFst, s"$eS == ${sp.elem.eDom.eFst}")
       assert(eS == mA.projectedElem, s"$eS == ${mA.projectedElem}")
       Sliced(xs.sortBy(sp), im.asMark[Iter[a]])
+
+    case IterMethods.sort(
+            IsSliced(xs: RIter[s]@unchecked, im @ IterMarking(All, mA: SliceMarking[a])), _c) =>
+      val c = _c.asRep[((a,a)) => Boolean]
+      val sp = sliceIn(c, PairMarking(mA,mA)).asRep[((s,s)) => Boolean]
+      val eS = xs.elem.eRow
+      assert(eS == sp.elem.eDom.eFst, s"$eS == ${sp.elem.eDom.eFst}")
+      assert(eS == mA.projectedElem, s"$eS == ${mA.projectedElem}")
+      Sliced(xs.sort(sp), im.asMark[Iter[a]])
 
     case IterMethods.isEmpty(
             IsSliced(xs: RIter[s]@unchecked, IterMarking(KeyPath.All, mA: SliceMarking[a]))) =>

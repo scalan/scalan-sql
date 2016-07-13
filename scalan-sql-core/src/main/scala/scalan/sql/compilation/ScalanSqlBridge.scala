@@ -234,7 +234,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       val eRow = pExp.elem.asInstanceOf[IterElem[_, _]].eRow
       val materialized = callMethod(pExp, pExp.elem, "materialize", cloneFun(eRow))
       val comparator = generateComparator(p, by, inputs)(eRow)
-      callMethod(materialized, pExp.elem, "sortBy", comparator)
+      callMethod(materialized, pExp.elem, "sort", comparator)
     case GroupBy(agg, by) =>
       agg match {
         case Project(p, columns) =>
@@ -544,12 +544,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         case lrhs: LRHS[a] =>
           val elem = lrhs.elem
           val ord = getOrdering(elem)
-          OrderingCompare(ord)(elem)(lrhs.l, lrhs.r)
+          OrderingLT(ord)(lrhs.l, lrhs.r)
       }
     }
 
     withContext(table) {
-      fun[(A, A), Int] { case x =>
+      fun[(A, A), Boolean] { x =>
         // TODO NullsOrdering currently ignored
         order.map {
           case SortSpec(expr, direction, _) =>
@@ -557,12 +557,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             val rhs = generateExpr(expr, inputs + (currentScopeName -> x._2))
             direction match {
               case Ascending =>
-                compare(lhs, rhs)
+                (compare(lhs, rhs), lhs === rhs)
               case Descending =>
-                compare(rhs, lhs)
+                (compare(rhs, lhs), rhs === lhs)
             }
-        }.reduceRight { (comp1, comp2) =>
-          IF (comp1 !== 0) THEN comp1 ELSE comp2
+        }.foldRight(toRep(false)) { (comp1, acc) =>
+          comp1._1 || (comp1._2 && acc)
         }
       }
     }

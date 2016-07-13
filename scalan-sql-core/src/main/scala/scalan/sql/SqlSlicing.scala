@@ -34,6 +34,20 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
               f.marked(FuncMarking(PairMarking(mDom, mDom), mInt)))
         }
 
+        case IterMethods.sort(_xs, _f) => outMark match {
+          case IterMarking(_, mA: SliceMarking[a]) =>
+            val xs = _xs.asRep[Iter[a]]
+            val f = _f.asRep[((a,a)) => Boolean]
+            val mBoolean = element[Boolean].toMarking
+            val fm = analyzeFunc(f, mBoolean)
+            val PairMarking(mD,_) = fm.mDom
+            val mDom = mD.asMark[a].join(mA)
+            val mxs = getMark(xs) |/| (All, mDom)
+            Seq[MarkedSym](
+              (xs, mxs), (thisSym.asRep[Iter[a]], mxs),
+              f.marked(FuncMarking(PairMarking(mDom, mDom), mBoolean)))
+        }
+
         case IterMethods.filter(_xs, f: RFunc[a, Boolean] @unchecked) => outMark match {
           case IterMarking(_, inner) =>
             val xs = _xs.asRep[Iter[a]]
