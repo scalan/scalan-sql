@@ -155,7 +155,7 @@ object SqlAST {
 
   case class CreateTableStmt(table: Table) extends Statement
 
-  case class CreateIndexStmt(name: String, table: Table, key: ColumnList) extends Statement
+  case class CreateIndexStmt(name: String, table: Table, columns: List[IndexedColumn], isUnique: Boolean) extends Statement
 
   sealed trait Expression
 

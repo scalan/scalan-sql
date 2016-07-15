@@ -386,7 +386,7 @@ class SqlCodegen extends SqlResolver {
 
   def generateIndex(index: CreateIndexStmt): String = {
     currScope = Scope(TableContext(index.table), Some(currScope), 0, "r")
-    val body = buildTree(index.key.map(part => pathString(lookup(ColumnRef(None, part)).path)), "Pair(")
+    val body = buildTree(index.columns.map(part => pathString(lookup(ColumnRef(None, part.name)).path)), "Pair(")
     val result = s"""def ${index.name}(${currScope.name}: Rep[${index.table.name.capitalize}]) = $body"""
     popContext()
     result

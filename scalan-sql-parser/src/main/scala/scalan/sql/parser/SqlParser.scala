@@ -230,10 +230,10 @@ class SqlParser {
       }
 
     lazy val tableConstraint: Parser[TableConstraint] =
-      PRIMARY ~> KEY ~> ("(" ~> repsep(indexedColumn, ",") <~ ")") ~ conflictClause ^^ {
+      PRIMARY ~> KEY ~> indexedColumnList ~ conflictClause ^^ {
         case cols ~ onConflict => PrimaryKeyT(cols, onConflict)
       } |
-        UNIQUE ~> ("(" ~> repsep(indexedColumn, ",") <~ ")") ~ conflictClause ^^ {
+        UNIQUE ~> indexedColumnList ~ conflictClause ^^ {
           case cols ~ onConflict => UniqueT(cols, onConflict)
         } |
         checkClause |
@@ -249,9 +249,11 @@ class SqlParser {
       case name ~ optCollSeq ~ dir => IndexedColumn(name, optCollSeq.getOrElse("BINARY"), dir)
     }
 
+    lazy val indexedColumnList = "(" ~> repsep(indexedColumn, ",") <~ ")"
+
     lazy val createIndexStmt: Parser[Statement] =
-      CREATE ~> INDEX ~> ident ~ (ON ~> table) ~ fieldList ^^ {
-        case name ~ table ~ key => CreateIndexStmt(name, table, key)
+      (CREATE ~> UNIQUE.? <~ INDEX <~ (IF ~ NOT ~ EXISTS).?) ~ ident ~ (ON ~> table) ~ indexedColumnList ^^ {
+        case u ~ name ~ table ~ key => CreateIndexStmt(name, table, key, u.isDefined)
       }
 
     lazy val table: Parser[Table] =
