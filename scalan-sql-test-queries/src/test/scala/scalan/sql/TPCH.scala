@@ -88,21 +88,22 @@ object TPCH {
       |    p_comment varchar,
       |    p_dummy char);
       |
-      |create index lineitem_pk on lineitem(l_orderkey, l_linenumber);
+      |create unique index lineitem_pk on lineitem(l_orderkey, l_linenumber);
       |create index lineitem_order_fk on lineitem(l_orderkey);
       |create index lineitem_supp_fk on lineitem(l_suppkey);
       |create index lineitem_part_fk on lineitem(l_partkey);
       |create index lineitem_ps_fk on lineitem(l_partkey, l_suppkey);
-      |create index part_pk on part(p_partkey);
-      |create index supplier_pk on supplier(s_suppkey);
-      |create index partsupp_pk on partsupp(ps_partkey, ps_suppkey);
+      |create unique index part_pk on part(p_partkey);
+      |create unique index supplier_pk on supplier(s_suppkey);
+      |create index supplier_nation_fk on supplier(s_nationkey);
+      |create unique index partsupp_pk on partsupp(ps_partkey, ps_suppkey);
       |create index partsupp_supp_fk on partsupp(ps_suppkey);
       |create index partsupp_part_fk on partsupp(ps_partkey);
-      |create index customer_pk on customer(c_custkey);
+      |create unique index customer_pk on customer(c_custkey);
       |create index customer_nation_fk on customer(c_nationkey);
-      |create index orders_pk on orders(o_orderkey);
+      |create unique index orders_pk on orders(o_orderkey);
       |create index orders_cust_fk on orders(o_custkey);
-      |create index nation_pk on nation(n_nationkey);
+      |create unique index nation_pk on nation(n_nationkey);
       |create index nation_region_fk on nation(n_regionkey);
       |create index region_pk on region(r_regionkey);
     """.stripMargin
@@ -147,8 +148,8 @@ object TPCH {
       |    join nation on s_nationkey = n_nationkey
       |    join region on n_regionkey = r_regionkey
       |where
-      |    p_size = 43
-      |    and p_type like '%TIN'
+      |    p_size = 35
+      |    and p_type like '%COPPER'
       |    and r_name = 'AFRICA'
       |    and ps_supplycost = (
       |        select
@@ -653,7 +654,7 @@ object TPCH {
       |where
       |    (p_brand = 'Brand#31'
       |    and p_container in ( 'SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
-      |    and l_quantity >= 26 and l_quantity <= 36
+      |    and l_quantity >= 4 and l_quantity <= 14
       |    and p_size between 1 and 5
       |    and l_shipmode in ('AIR', 'AIR REG')
       |    and l_shipinstruct = 'DELIVER IN PERSON')
@@ -667,7 +668,7 @@ object TPCH {
       |or
       |    (p_brand = 'Brand#43'
       |    and p_container in ( 'LG CASE', 'LG BOX', 'LG PACK', 'LG PKG')
-      |    and l_quantity >= 4 and l_quantity <= 14
+      |    and l_quantity >= 26 and l_quantity <= 36
       |    and p_size between 1 and 15
       |    and l_shipmode in ('AIR', 'AIR REG')
       |    and l_shipinstruct = 'DELIVER IN PERSON')""".stripMargin,
@@ -706,7 +707,7 @@ object TPCH {
       |                    and l_suppkey = s_suppkey
       |                    and l_shipdate >= '1996-01-01'
       |                    and l_shipdate < '1997-01-01'))
-      |    and n_name = 'JORDAN'
+      |    and n_name = 'PERU'
       |order by
       |    s_name""".stripMargin,
     Map(
@@ -770,7 +771,7 @@ object TPCH {
       |    from
       |        customer
       |    where
-      |        substr(c_phone, 1, 2) in ('[I1]','[I2]','[I3]','[I4]','[I5]','[I6]','[I7]')
+      |        substr(c_phone, 1, 2) in ('25','14','34','24','22','16','33')
       |        and c_acctbal > (
       |            select
       |                avg(c_acctbal)
@@ -778,7 +779,7 @@ object TPCH {
       |                customer
       |            where
       |                c_acctbal > 0.00
-      |                and substr(c_phone, 1, 2) in ('[I1]','[I2]','[I3]','[I4]','[I5]','[I6]','[I7]'))
+      |                and substr(c_phone, 1, 2) in ('25','14','34','24','22','16','33'))
       |        and not exists (
       |            select *
       |            from
