@@ -24,15 +24,15 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   protected def initSqlResolver(p: SqlResolver): Unit = {}
 
-  private val resolver = new SqlResolver
+  protected val resolver = new SqlResolver
   initSqlResolver(resolver)
 
-  private def currentScopeName = resolver.currScope.name
+  protected def currentScopeName = resolver.currScope.name
 
   protected def getFakeDepName: String = "!_fake_dep_!"
 
-  private val fakeDepName = getFakeDepName
-  private val fakeDepField = (fakeDepName, IntElement)
+  protected val fakeDepName = getFakeDepName
+  protected val fakeDepField = (fakeDepName, IntElement)
 
   private val tableElems: Map[String, StructElem[Struct]] = {
     resolver.parseDDL(ddl).collect {
