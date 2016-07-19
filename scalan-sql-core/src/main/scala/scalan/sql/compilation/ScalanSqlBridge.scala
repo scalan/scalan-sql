@@ -611,6 +611,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   private def getOrdering[T](e: Elem[T]): Ordering[T] = (e.asInstanceOf[TypeDesc] match {
     case IntElement => implicitly[Ordering[Int]]
+    case LongElement => implicitly[Ordering[Long]]
     case DoubleElement => implicitly[Ordering[Double]]
     case CharElement => implicitly[Ordering[Char]]
     case StringElement => implicitly[Ordering[String]]
