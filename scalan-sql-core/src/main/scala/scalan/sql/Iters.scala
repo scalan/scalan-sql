@@ -14,20 +14,20 @@ trait Iters extends ScalanDsl {
   trait Iter[Row] extends Def[Iter[Row]] {
     def eRow: Elem[Row]
 
-    def map[B](f: Rep[Row => B]): RIter[B]
+    def map[B](f: Rep[Row => B]): RIter[B] = delayInvoke
 
     // second parameter is used to create an initial value
-    def mapU[B](f: Rep[((B, Row)) => Unit], eB: Elem[B]): RIter[B]
+    def mapU[B](f: Rep[((B, Row)) => Unit], eB: Elem[B]): RIter[B] = delayInvoke
 
-    def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B]
+    def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B] = delayInvoke
 
-    def filter(f: Rep[Row => Boolean]): RIter[Row]
+    def filter(f: Rep[Row => Boolean]): RIter[Row] = delayInvoke
 
-    def isEmpty: Rep[Boolean]
+    def isEmpty: Rep[Boolean] = delayInvoke
 
-    def reduce[B](f: Rep[((B, Row)) => B], init: Rep[Thunk[B]]): RIter[B]
+    def reduce[B](f: Rep[((B, Row)) => B], init: Rep[Thunk[B]]): RIter[B] = delayInvoke
 
-    def reduceU[B](f: Rep[((B, Row)) => Unit], init: Rep[Thunk[B]]): RIter[B]
+    def reduceU[B](f: Rep[((B, Row)) => Unit], init: Rep[Thunk[B]]): RIter[B] = delayInvoke
 
     /**
       * @param packKey serialize key into string preserving uniqueness
@@ -38,28 +38,44 @@ trait Iters extends ScalanDsl {
                         packKey: Rep[Row => String],
                         newValue: Rep[Thunk[V]],
                         reduceValue: Rep[((V, Row)) => V]
-                       ): RIter[Struct]
+                       ): RIter[Struct] = delayInvoke
 
     def mapReduceU[K, V](mapKey: Rep[Row => K],
                          packKey: Rep[Row => String],
                          newValue: Rep[Thunk[V]],
                          reduceValue: Rep[((V, Row)) => Unit]
-                        ): RIter[Struct]
+                        ): RIter[Struct] = delayInvoke
 
     // sort takes a less-than predicate, sortBy takes an Ordering.compare-like function
-    def sort(comparator: Rep[((Row, Row)) => Boolean]): RIter[Row]
-    def sortBy(comparator: Rep[((Row, Row)) => Int]): RIter[Row]
+    def sort(comparator: Rep[((Row, Row)) => Boolean]): RIter[Row] = delayInvoke
+    def sortBy(comparator: Rep[((Row, Row)) => Int]): RIter[Row] = delayInvoke
 
-    def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)]
+    def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)] = delayInvoke
 
-    def toArray: Arr[Row]
+    def toArray: Arr[Row] = delayInvoke
 
     // always called with Clone and equivalent to `map`, but semantically different
-    def materialize(f: Rep[Row => Row]): RIter[Row]
+    def materialize(f: Rep[Row => Row]): RIter[Row] = delayInvoke
   }
   trait IterCompanion {
     def empty[Row: Elem]: Rep[Iter[Row]] = externalMethod("IterCompanion", "empty")
   }
+
+  // TODO make Iter[K] instead?
+  trait CursorIter[Row, K] extends Iter[Row] {
+    def eK: Elem[K]
+    override def eRow: Elem[Row]
+
+    override def filter(f: Rep[Row => Boolean]): RIter[Row] = Iters.this.indexedFilter(self.asRep[IndexCursorIter[Row, K]], f)
+
+    def indexedFilter(lowerBound: Rep[K], upperBound: Rep[K], lowerIsInclusive: Boolean, upperIsInclusive: Boolean): Iter[Row] = delayInvoke
+  }
+
+  abstract class TableCursorIter[Row](val tableName: String)(implicit val eRow: Elem[Row]) extends CursorIter[Row, Long] {
+    def eK = LongElement
+  }
+
+  abstract class IndexCursorIter[Row, K](val tableName: String, val indexName: String, val columns: Array[(String, Boolean)], val isUnique: Boolean)(implicit val eRow: Elem[Row], val eK: Elem[K]) extends Iter[Row]
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.
@@ -79,9 +95,13 @@ trait ItersDsl extends impl.ItersAbs { self: ScalanSql =>
   implicit val iterContainer: Functor[Iter] = new IterFunctor {}
 
   implicit def iterElemExtensions[A](ie: Elem[Iter[A]]) = ie.asInstanceOf[IterElem[A, Iter[A]]]
+
+  def indexedFilter[Row](cursor: Rep[IndexCursorIter[Row, _]], f: Rep[Row => Boolean]): RIter[Row]
 }
 
-trait ItersDslStd extends impl.ItersStd { self: ScalanSqlStd => }
+trait ItersDslStd extends impl.ItersStd { self: ScalanSqlStd =>
+  def indexedFilter[Row](cursor: Rep[IndexCursorIter[Row, _]], f: Rep[Row => Boolean]): RIter[Row] = ???
+}
 
 trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   private[this] var advanceIterCounter = 0
@@ -181,6 +201,11 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       }
     case _ =>
       super.getResultElem(receiver, m, args)
+  }
+
+  // TODO determine when index should be used better
+  def indexedFilter[Row](cursor: Rep[IndexCursorIter[Row, _]], f: Rep[Row => Boolean]): RIter[Row] = f match {
+    case _ => delayInvoke
   }
 
   override def rewriteDef[T](d: Def[T]): Exp[_] = { import KeyPath._; d match {
