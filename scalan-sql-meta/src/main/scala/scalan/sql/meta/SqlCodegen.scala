@@ -4,15 +4,15 @@ import scalan.meta.ScalanAst.{SApply, SConst, SMethodDef, STraitCall}
 import scalan.sql.parser.SqlAST._
 import scalan.sql.parser.SqlResolver
 
-class SqlCodegen extends SqlResolver {
+class SqlCodegen extends SqlResolver("") {
   var indent = "\t"
 
   def generateSchema(sql: String): String = {
     val statements = parseDDL(sql)
 
     statements.map {
-      case s: CreateIndexStmt => generateIndex(s)
-      case s: CreateTableStmt => generateTable(s.table)
+      case CreateIndexStmt(i) => generateIndex(i)
+      case CreateTableStmt(t) => generateTable(t)
       case s => throw new NotImplementedError(s"Cannot generate schema for statement $s")
     }.mkString("\n\n")
   }
@@ -278,12 +278,12 @@ class SqlCodegen extends SqlResolver {
         generateOperator(outer) + s"""\n$indent.join(${generateOperator(inner)}, $joinType)(${generateJoinKey(outer, spec)}, ${generateJoinKey(inner, spec)})"""
       case Scan(t) =>
         currMethod.explicitArgs.find(arg => arg.tpe match {
-          case STraitCall(n1, List(STraitCall(n2, List(p)))) if n1 == "Rep" && n2 == "Table" && p.toString == t.name.capitalize => true
+          case STraitCall(n1, List(STraitCall(n2, List(p)))) if n1 == "Rep" && n2 == "Table" && p.toString == t.capitalize => true
           case _ => false
         }) match {
           // TODO: global lookup
           case Some(arg) => arg.name
-          case _ => t.name.toLowerCase
+          case _ => t.toLowerCase
         }
       case OrderBy(p, by) =>
         // TODO ignores null ordering
@@ -334,7 +334,7 @@ class SqlCodegen extends SqlResolver {
   def operatorType(op: Operator): String = {
     op match {
       case Join(outer, inner, _, _) => "(" + operatorType(outer) + ", " + operatorType(inner) + ")"
-      case Scan(t) => buildTree(t.schema.map(c => c.ctype.scalaName))
+      case Scan(t) => buildTree(table(t).columns.map(_.ctype.scalaName))
       case OrderBy(p, by) => operatorType(p)
       case GroupBy(p, by) => operatorType(p)
       case Filter(p, predicate) => operatorType(p)
@@ -367,7 +367,7 @@ class SqlCodegen extends SqlResolver {
   }
 
   def generateTable(table: Table): String = {
-    val columns = table.schema
+    val columns = table.columns
     val n_columns = columns.length
     val typeName = table.name.capitalize
     //    val typeDef = buildTree(columns.map(c => c.ctype.scalaName))
@@ -384,10 +384,10 @@ class SqlCodegen extends SqlResolver {
        |""".stripMargin
   }
 
-  def generateIndex(index: CreateIndexStmt): String = {
-    currScope = Scope(TableContext(index.table), Some(currScope), 0, "r")
+  def generateIndex(index: Index): String = {
+    currScope = Scope(TableContext(table(index.tableName)), Some(currScope), 0, "r")
     val body = buildTree(index.columns.map(part => pathString(lookup(ColumnRef(None, part.name)).path)), "Pair(")
-    val result = s"""def ${index.name}(${currScope.name}: Rep[${index.table.name.capitalize}]) = $body"""
+    val result = s"""def ${index.name}(${currScope.name}: Rep[${index.tableName.capitalize}]) = $body"""
     popContext()
     result
   }

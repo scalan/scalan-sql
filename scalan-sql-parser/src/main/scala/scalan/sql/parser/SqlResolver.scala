@@ -2,7 +2,22 @@ package scalan.sql.parser
 
 import scalan.sql.parser.SqlAST._
 
-class SqlResolver extends SqlParser {
+class SqlResolver(ddl: String) extends SqlParser {
+  val schema = {
+    val script = parseDDL(ddl)
+
+    val tables = script.collect {
+      case CreateTableStmt(t) => (t.name, t)
+    }.toMap
+
+    val indices = script.collect {
+      case CreateIndexStmt(i) => i
+    }.groupBy(_.tableName)
+
+    Schema(tables, indices)
+  }
+  def table(name: String) = schema.table(name)
+  def indices(tableName: String) = schema.indices(tableName)
 
   case class Scope(var ctx: Context, outer: Option[Scope], nesting: Int, name: String) {
     def lookup(col: ColumnRef): Binding = {
@@ -49,7 +64,7 @@ class SqlResolver extends SqlParser {
   def tables(op: Operator): Set[Table] = {
     op match {
       case Join(outer, inner, _, _) => tables(outer) ++ tables(inner)
-      case Scan(t) => Set(t)
+      case Scan(t) => Set(table(t))
       case OrderBy(p, by) => tables(p)
       case GroupBy(p, by) => tables(p)
       case Filter(p, predicate) => tables(p) ++ tablesInNestedSelects(predicate)
@@ -89,11 +104,11 @@ class SqlResolver extends SqlParser {
   case class TableContext(table: Table) extends Context {
     def resolve(ref: ColumnRef): Option[Binding] = {
       if (ref.table.isEmpty || ref.table == Some(table.name)) {
-        val i = table.schema.indexWhere(c => c.name == ref.name)
+        val i = table.columns.indexWhere(c => c.name == ref.name)
         if (i >= 0) {
-          //val path = indexToPath(i, table.schema.length);
+          //val path = indexToPath(i, table.columns.length);
           val path = List(ref.name)
-          Some(Binding(scope.name, path, table.schema(i)))
+          Some(Binding(scope.name, path, table.columns(i)))
         } else None
       } else None
     }
@@ -144,7 +159,7 @@ class SqlResolver extends SqlParser {
   def buildContext(op: Operator): Context = {
     op match {
       case Join(outer, inner, _, _) => JoinContext(buildContext(outer), buildContext(inner))
-      case Scan(t) => TableContext(t)
+      case Scan(t) => TableContext(table(t))
       case OrderBy(p, by) => buildContext(p)
       case GroupBy(p, by) => buildContext(p)
       case Filter(p, predicate) => buildContext(p)

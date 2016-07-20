@@ -24,7 +24,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   protected def initSqlResolver(p: SqlResolver): Unit = {}
 
-  protected val resolver = new SqlResolver
+  protected val resolver = new SqlResolver(ddl)
   initSqlResolver(resolver)
 
   protected def currentScopeName = resolver.currScope.name
@@ -38,7 +38,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     resolver.parseDDL(ddl).collect {
       case CreateTableStmt(table) =>
         val fieldElems =
-          table.schema.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) } :+ fakeDepField
+          table.columns.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) } :+ fakeDepField
         (table.name, structElement(fieldElems))
     }
   }.toMap
@@ -86,8 +86,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   object ScanOrScanAlias {
     def unapply(op: Operator) = op match {
-      case Scan(table) => Some(table.name -> table)
-      case TableAlias(Scan(table), name) => Some(s"${table.name} as $name" -> table)
+      case Scan(tableName) => Some(tableName -> resolver.table(tableName))
+      case TableAlias(Scan(tableName), name) => Some(s"$tableName as $name" -> resolver.table(tableName))
       case _ => None
     }
   }

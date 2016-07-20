@@ -10,16 +10,15 @@ object SqlAST {
   case class SqlException(msg: String) extends Exception(msg)
 
   type Script = List[Statement]
-  type Schema = List[Column]
   type ColumnList = List[String]
   type ExprList = List[Expression]
 
-  case class Table(name: String, schema: Schema, constraints: List[TableConstraint], withoutRowId: Boolean) {
+  case class Table(name: String, columns: List[Column], constraints: List[TableConstraint], withoutRowId: Boolean) {
     lazy val primaryKey: List[String] = {
       constraints.collectFirst {
         case PrimaryKeyT(columns, _) => columns.map(_.name)
       }.getOrElse {
-        schema.filter { _.constraints.exists(_.isInstanceOf[PrimaryKeyC]) } match {
+        columns.filter { _.constraints.exists(_.isInstanceOf[PrimaryKeyC]) } match {
           case Seq(col) => List(col.name)
           case columns =>
             val msg =
@@ -31,6 +30,13 @@ object SqlAST {
         }
       }
     }
+  }
+  case class Index(name: String, tableName: String, columns: List[IndexedColumn], isUnique: Boolean)
+
+  case class Schema(tables: Map[String, Table], indicesByName: Map[String, List[Index]]) {
+    def table(name: String) =
+      tables.getOrElse(name, throw new IllegalArgumentException(s"Table $name not found"))
+    def indices(tableName: String) = indicesByName.getOrElse(tableName, Nil)
   }
 
   case class Column(name: String, ctype: ColumnType, constraints: List[ColumnConstraint])
@@ -75,7 +81,7 @@ object SqlAST {
   sealed trait TableConstraint
   case class PrimaryKeyT(columns: List[IndexedColumn], onConflict: OnConflict) extends TableConstraint
   case class UniqueT(columns: List[IndexedColumn], onConflict: OnConflict) extends TableConstraint
-  case class ForeignKeyT(parent: Table, columnNames: List[(String, String)]) extends TableConstraint
+  case class ForeignKeyT(parent: String, columnNames: List[(String, String)]) extends TableConstraint
 
   // TODO first parameter should be expr: Expression, but name resolution inside table defs would need to be
   // fixed first
@@ -86,7 +92,7 @@ object SqlAST {
   case class NotNull(onConflict: OnConflict) extends ColumnConstraint
   case class UniqueC(onConflict: OnConflict) extends ColumnConstraint
   case class Default(expr: Expression) extends ColumnConstraint
-  case class ForeignKeyC(parent: Table, parentKey: String) extends ColumnConstraint
+  case class ForeignKeyC(parent: String, parentKey: String) extends ColumnConstraint
   case class Collate(collationSequence: String) extends ColumnConstraint
 
   case class Check(expr: Expression) extends ColumnConstraint with TableConstraint
@@ -109,7 +115,7 @@ object SqlAST {
 
   abstract sealed class Operator
 
-  case class Scan(table: Table) extends Operator
+  case class Scan(tableName: String) extends Operator
 
   case class Distinct(table: Operator) extends Operator
   case class Union(left: Operator, right: Operator) extends Operator
@@ -155,7 +161,7 @@ object SqlAST {
 
   case class CreateTableStmt(table: Table) extends Statement
 
-  case class CreateIndexStmt(name: String, table: Table, columns: List[IndexedColumn], isUnique: Boolean) extends Statement
+  case class CreateIndexStmt(index: Index) extends Statement
 
   sealed trait Expression
 
@@ -238,9 +244,5 @@ object SqlAST {
     }) + name
   }
 
-  def Schema(list: Column*): Schema = list.toList
-
   def Script(stmts: Statement*): Script = stmts.toList
-
-  def ExprList(exprs: Expression*): ExprList = exprs.toList
 }

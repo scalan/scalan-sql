@@ -68,7 +68,7 @@ trait Iters extends ScalanDsl {
 
     override def filter(f: Rep[Row => Boolean]): RIter[Row] = Iters.this.indexedFilter(self.asRep[IndexCursorIter[Row, K]], f)
 
-    def indexedFilter(lowerBound: Rep[K], upperBound: Rep[K], lowerIsInclusive: Boolean, upperIsInclusive: Boolean): Iter[Row] = delayInvoke
+    def indexedFilter(lowerBound: Rep[K], upperBound: Rep[K], lowerIsInclusive: Boolean, upperIsInclusive: Boolean): Rep[CursorIter[Row, K]] = delayInvoke
   }
 
   abstract class TableCursorIter[Row](val tableName: String)(implicit val eRow: Elem[Row]) extends CursorIter[Row, Long] {

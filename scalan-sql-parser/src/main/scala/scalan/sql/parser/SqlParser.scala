@@ -192,8 +192,6 @@ class SqlParser {
       new SqlLexical(keywords)
     }
 
-    val tables = mutable.Map.empty[String, Table]
-
     def schema(sql: String): Script = phrase(script)(new lexical.Scanner(sql)) match {
       case Success(res, _) => res
       case res => throw SqlException(res.toString)
@@ -225,7 +223,6 @@ class SqlParser {
       CREATE ~> (TEMP | TEMPORARY).? ~> TABLE ~> (IF ~ NOT ~ EXISTS).? ~> ident ~ ("(" ~> repsep(columnDef, ",") ~ ("," ~> tableConstraint).* <~ ")") ~ (WITHOUT ~ ROWID).? ^^ {
         case name ~ (columns ~ constraints) ~ withoutRowidOpt =>
           val table = Table(name, columns, constraints, withoutRowidOpt.isDefined)
-          tables.update(name, table)
           CreateTableStmt(table)
       }
 
@@ -252,12 +249,9 @@ class SqlParser {
     lazy val indexedColumnList = "(" ~> repsep(indexedColumn, ",") <~ ")"
 
     lazy val createIndexStmt: Parser[Statement] =
-      (CREATE ~> UNIQUE.? <~ INDEX <~ (IF ~ NOT ~ EXISTS).?) ~ ident ~ (ON ~> table) ~ indexedColumnList ^^ {
-        case u ~ name ~ table ~ key => CreateIndexStmt(name, table, key, u.isDefined)
+      (CREATE ~> UNIQUE.? <~ INDEX <~ (IF ~ NOT ~ EXISTS).?) ~ ident ~ (ON ~> ident) ~ indexedColumnList ^^ {
+        case u ~ name ~ tableName ~ key => CreateIndexStmt(Index(name, tableName, key, u.isDefined))
       }
-
-    lazy val table: Parser[Table] =
-      ident ^^ { name => if (tables.contains(name)) tables(name) else throw SqlException("Unknown table " + name)}
 
     // fieldType is optional in SQLite only
     lazy val columnDef: Parser[Column] =
@@ -313,10 +307,11 @@ class SqlParser {
     lazy val collationClause = COLLATE ~> ident
 
     // TODO support ON DELETE/UPDATE, MATCH, DEFERRABLE
+    // TODO fieldList can be optional
     // see https://www.sqlite.org/syntax/foreign-key-clause.html
-    lazy val foreignKeyClause: Parser[(Table, List[String])] =
-      REFERENCES ~> table ~ fieldList.? ^^ { case table ~ optKey =>
-        (table, optKey.getOrElse(table.primaryKey))
+    lazy val foreignKeyClause: Parser[(String, List[String])] =
+      REFERENCES ~> ident ~ fieldList ^^ { case table ~ key =>
+        (table, key)
       }
 
     lazy val fieldList: Parser[ColumnList] =
@@ -379,15 +374,10 @@ class SqlParser {
     protected lazy val relationFactor: Parser[Operator] =
       (ident ~ (opt(AS) ~> opt(ident))) ^^ {
         case name ~ aliasOpt =>
-          tables.get(name) match {
-            case Some(table) =>
-              val t = Scan(table)
-              aliasOpt match {
-                case Some(alias) => TableAlias(t, alias)
-                case _ => t
-              }
-            case None =>
-              throw SqlException("Table " + name + " not found")
+          val t = Scan(name)
+          aliasOpt match {
+            case Some(alias) => TableAlias(t, alias)
+            case _ => t
           }
       } |
         ("(" ~> selectStmt <~ ")") ~ (AS.? ~> ident) ^^ {
