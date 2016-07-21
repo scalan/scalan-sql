@@ -53,7 +53,8 @@ object SqlBoilerplateTool extends BoilerplateTool {
     name = "sql",
     srcPath = "scalan-sql-core/src/main/scala",
     entityFiles = List(
-      "scalan/sql/Iters.scala"
+      "scalan/sql/Iters.scala",
+      "scalan/sql/Relations.scala"
     ),
     baseContextTrait = "Scalan",
     seqContextTrait = "ScalanStd",

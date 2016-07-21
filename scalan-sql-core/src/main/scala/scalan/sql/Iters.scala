@@ -61,21 +61,9 @@ trait Iters extends ScalanDsl {
     def empty[Row: Elem]: Rep[Iter[Row]] = externalMethod("IterCompanion", "empty")
   }
 
-  // TODO make Iter[K] instead?
-  trait CursorIter[Row, K] extends Iter[Row] {
-    def eK: Elem[K]
-    override def eRow: Elem[Row]
+  abstract class TableIter[Row]()(implicit val eRow: Elem[Row], val tableName: SingletonElem[String]) extends Iter[Row]
 
-    override def filter(f: Rep[Row => Boolean]): RIter[Row] = Iters.this.indexedFilter(self.asRep[IndexCursorIter[Row, K]], f)
-
-    def indexedFilter(lowerBound: Rep[K], upperBound: Rep[K], lowerIsInclusive: Boolean, upperIsInclusive: Boolean): Rep[CursorIter[Row, K]] = delayInvoke
-  }
-
-  abstract class TableCursorIter[Row](val tableName: String)(implicit val eRow: Elem[Row]) extends CursorIter[Row, Long] {
-    def eK = LongElement
-  }
-
-  abstract class IndexCursorIter[Row, K](val tableName: String, val indexName: String, val columns: Array[(String, Boolean)], val isUnique: Boolean)(implicit val eRow: Elem[Row], val eK: Elem[K]) extends Iter[Row]
+  abstract class IndexIter[Row]()(implicit val eRow: Elem[Row], val indexName: SingletonElem[String]) extends Iter[Row]
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.
@@ -96,11 +84,15 @@ trait ItersDsl extends impl.ItersAbs { self: ScalanSql =>
 
   implicit def iterElemExtensions[A](ie: Elem[Iter[A]]) = ie.asInstanceOf[IterElem[A, Iter[A]]]
 
-  def indexedFilter[Row](cursor: Rep[IndexCursorIter[Row, _]], f: Rep[Row => Boolean]): RIter[Row]
+  def advanceIter[Row](iter: RIter[Row]): Rep[(Row, Iter[Row])] = ???
+
+  def clone[A](x: Rep[A]): Rep[A] = ???
+
+  // TODO remove when SqlIterBridge is removed
+  def cloneFun[A](implicit eA: Elem[A]) = fun[A, A] { clone(_) }
 }
 
 trait ItersDslStd extends impl.ItersStd { self: ScalanSqlStd =>
-  def indexedFilter[Row](cursor: Rep[IndexCursorIter[Row, _]], f: Rep[Row => Boolean]): RIter[Row] = ???
 }
 
 trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
@@ -112,18 +104,12 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
 
   case class Clone[A](x: Rep[A]) extends BaseDef[A]()(x.elem)
 
-  def clone[A](x: Rep[A]): Rep[A] = Clone(x)
+  override def clone[A](x: Rep[A]): Rep[A] = Clone(x)
 
-  def cloneFun[A](implicit eA: Elem[A]) = fun[A, A] { clone(_) }
-
-  def advanceIter[Row](iter: RIter[Row]): Rep[(Row, Iter[Row])] = {
+  override def advanceIter[Row](iter: RIter[Row]): Rep[(Row, Iter[Row])] = {
     advanceIterCounter += 1
     AdvanceIter(iter, advanceIterCounter)
   }
-
-  val keyFld = "key"
-  val valFld = "val"
-  def keyValElem(eK: Elem[_], eV: Elem[_]) = structElement(Seq(keyFld -> eK, valFld -> eV))
 
   case class IterMarking[T](itemsPath: KeyPath, override val innerMark: SliceMarking[T]) extends SliceMarking1[T,Iter](innerMark) {
     implicit val eItem = innerMark.elem
@@ -201,11 +187,6 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       }
     case _ =>
       super.getResultElem(receiver, m, args)
-  }
-
-  // TODO determine when index should be used better
-  def indexedFilter[Row](cursor: Rep[IndexCursorIter[Row, _]], f: Rep[Row => Boolean]): RIter[Row] = f match {
-    case _ => delayInvoke
   }
 
   override def rewriteDef[T](d: Def[T]): Exp[_] = { import KeyPath._; d match {

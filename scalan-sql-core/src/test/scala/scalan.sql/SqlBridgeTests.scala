@@ -2,35 +2,57 @@ package scalan.sql
 
 import scalan.BaseNestedTests
 import scalan.compilation.GraphVizConfig
-import scalan.sql.compilation.ScalanSqlBridge
+import scalan.sql.compilation.{RelationToIterBridge, ScalanSqlBridge}
 import scalan.sql.parser.SqlResolver
 import scalan.sql.parser.SqlAST.BasicStringType
 
-class SqlBridgeTests extends BaseNestedTests {
+abstract class AbstractSqlBridgeTests extends BaseNestedTests {
+  def createExpAndGraph(query: TestQuery): Unit
+
+  def tpchBridge(scalan: ScalanSqlExp): ScalanSqlBridge[scalan.type] =
+    new ScalanSqlBridge[scalan.type](TPCH.Schema, scalan) {
+      override protected def initSqlResolver(p: SqlResolver) = {
+        p.registerFunctionType("strftime", BasicStringType)
+      }
+    }
+
   describe("TPCH") {
     TPCH.allQueries.foreach {
       case (name, query) =>
         it(name) {
-          val scalan = new ScalanSqlExp {}
-          val bridge = new ScalanSqlBridge[scalan.type](TPCH.Schema, scalan) {
-            override protected def initSqlResolver(p: SqlResolver) = {
-              p.registerFunctionType("strftime", BasicStringType)
-            }
-          }
-
-          def createExpAndGraph() = {
-            val exp = bridge.sqlQueryExp(query.sql)
-            scalan.emitDepGraph(exp, prefix, currentTestNameAsFileName)(GraphVizConfig.default)
-          }
-
           name match {
               // not supported yet
             case "Q13" | "Q16" =>
-              pendingUntilFixed { createExpAndGraph() }
+              pendingUntilFixed { createExpAndGraph(query) }
             case _ =>
-              createExpAndGraph()
+              createExpAndGraph(query)
           }
         }
+    }
+  }
+}
+
+class RelationSqlBridgeTests extends AbstractSqlBridgeTests {
+  def createExpAndGraph(query: TestQuery) = {
+    val scalan = new ScalanSqlExp {}
+    val bridge = tpchBridge(scalan)
+
+    val exp = bridge.sqlQueryExp(query.sql)
+    scalan.emitDepGraph(exp, prefix, currentTestNameAsFileName)(GraphVizConfig.default)
+  }
+}
+
+class IterSqlBridgeTests extends AbstractSqlBridgeTests {
+  def createExpAndGraph(query: TestQuery) = {
+    val scalan = new ScalanSqlExp {}
+    import scalan._
+    val bridge = tpchBridge(scalan)
+    val iterBridge = new RelationToIterBridge[scalan.type](scalan)
+
+    bridge.sqlQueryExp(query.sql) match {
+      case relExp: RFunc[Struct, Relation[a]] =>
+        val iterExp = iterBridge.relationFunToIterFun(relExp)
+        scalan.emitDepGraph(iterExp, prefix, currentTestNameAsFileName)(GraphVizConfig.default)
     }
   }
 }

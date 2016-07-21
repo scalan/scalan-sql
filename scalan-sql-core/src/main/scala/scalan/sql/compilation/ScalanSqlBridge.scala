@@ -8,6 +8,10 @@ import scalan.sql.parser.{SqlAST, SqlResolver}
 import SqlAST._
 import scalan.sql.{ScalanSqlExp}
 
+object ScalanSqlBridge {
+  val FakeDepName = "!_fake_dep_!"
+}
+
 class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   import scalan._
 
@@ -29,10 +33,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   protected def currentScopeName = resolver.currScope.name
 
-  protected def getFakeDepName: String = "!_fake_dep_!"
-
-  protected val fakeDepName = getFakeDepName
-  protected val fakeDepField = (fakeDepName, IntElement)
+  // TODO remove this, introduce fakeDeps when lowering to Iters (if necessary!)
+  import ScalanSqlBridge.FakeDepName
+  val fakeDepField = (FakeDepName, IntElement)
 
   private val tableElems: Map[String, StructElem[Struct]] = {
     resolver.parseDDL(ddl).collect {
@@ -68,9 +71,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
 
     val eInput = structElement(inputRowElems.map {
-      case (name, eRow) => (name, funcElement(IntElement, iterElement(eRow)))
+      case (name, eRow) => (name, funcElement(IntElement, relationElement(eRow)))
     } :+ fakeDepField)
-    val resultIterFun = inferredFun(eInput) { x =>
+    val resultRelationFun = inferredFun(eInput) { x =>
       val tableScopes = tables.map {
         case (name, table) => (name, field(x, name))
       }
@@ -79,9 +82,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       generateOperator(parsedSql, inputs)
     }
     // could return a struct instead of adding metadate, function is easier to pass to compiler for now
-    resultIterFun.setMetadata(QueryTextKey)(query)
+    resultRelationFun.setMetadata(QueryTextKey)(query)
 
-    resultIterFun
+    resultRelationFun
   }
 
   object ScanOrScanAlias {
@@ -93,14 +96,14 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   def allTables(op: Any): Iterator[(String, Table)] = op match {
-    case ScanOrScanAlias(iterName, table) =>
-      Iterator(iterName -> table)
+    case ScanOrScanAlias(relationName, table) =>
+      Iterator(relationName -> table)
     case p: Product =>
       p.productIterator.flatMap(allTables)
     case _ => Iterator.empty
   }
 
-  // From ScalanSparkBridge
+  // TODO replace all calls by actual method calls
   def callMethod[A](obj: Rep[_], eRes: Elem[A], methodName: String, args: AnyRef*): Rep[A] = {
     val e = obj.elem
     val clazz = e.runtimeClass
@@ -112,16 +115,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       case _ => classOf[AnyRef]
     }
     val m = clazz.getMethod(methodName, argClasses:_*)
-    val res = mkMethodCall(obj, m, args.toList, true, eRes)
+    val res = mkMethodCall(obj, m, args.toList, false, eRes)
     res.asInstanceOf[Rep[A]]
   }
 
   def generateJoin(outer: Operator, inner: Operator, joinType: JoinType, joinSpec: JoinSpec, inputs: ExprInputs) = {
     val outerExp = generateOperator(outer, inputs)
     val innerExp = generateOperator(inner, inputs)
-    val outerRowElem = outerExp.elem.asInstanceOf[IterElem[_, _]].eRow
-    val innerRowElem = innerExp.elem.asInstanceOf[IterElem[_, _]].eRow
-    val eRes = iterElement(pairElement(outerRowElem, innerRowElem))
+    val outerRowElem = outerExp.elem.asInstanceOf[RelationElem[_, _]].eRow
+    val innerRowElem = innerExp.elem.asInstanceOf[RelationElem[_, _]].eRow
+    val eRes = relationElement(pairElement(outerRowElem, innerRowElem))
 
     val (outerJoinColumns, innerJoinColumns) = joinSpec match {
       case Natural =>
@@ -193,26 +196,24 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     if (joinType != Inner) {
       !!!("Non-inner joins are not supported yet", outerExp, innerExp)
     }
-    val cloneInnerFun = cloneFun(innerRowElem)
-    callMethod(outerExp, eRes, "join", innerExp, outerKeyFun, innerKeyFun, cloneInnerFun)
+    callMethod(outerExp, eRes, "join", innerExp, outerKeyFun, innerKeyFun)
   }
 
-  // See SqlCompiler.generateOperator
-  def generateOperator(op: Operator, inputs: ExprInputs): Exp[_] = op match {
+  def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = op match {
     case Join(outer, inner, joinType, joinSpec) =>
       generateJoin(outer, inner, joinType, joinSpec, inputs)
-    case ScanOrScanAlias(iterName, table) =>
+    case ScanOrScanAlias(relationName, table) =>
       def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
         case se: StructElem[_] =>
           val x1 = x.asRep[Struct]
-          if (se.fields.exists(_._1 == fakeDepName)) {
-            Some(x1.get[Int](fakeDepName))
+          if (se.fields.exists(_._1 == FakeDepName)) {
+            Some(x1.get[Int](FakeDepName))
           } else {
-            val iter = se.fields.iterator.map {
+            val relation = se.fields.iterator.map {
               case (name, _) => findFakeDep(x1.getUntyped(name))
             }.filter(_.isDefined)
-            if (iter.hasNext)
-              iter.next()
+            if (relation.hasNext)
+              relation.next()
             else
               None
           }
@@ -225,16 +226,15 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
       val currentLambdaArg = this.currentLambdaArg(inputs)
       val fakeDep = findFakeDep(currentLambdaArg).getOrElse {
-        !!!(s"Can't find $fakeDepName in ${currentLambdaArg.toStringWithType}")
+        !!!(s"Can't find $FakeDepName in ${currentLambdaArg.toStringWithType}")
       }
 
-      inputs(iterName).asInstanceOf[RFunc[Int, Iter[_]]](fakeDep)
+      inputs(relationName).asInstanceOf[RFunc[Int, Relation[_]]](fakeDep)
     case OrderBy(p, by) =>
       val pExp = generateOperator(p, inputs)
-      val eRow = pExp.elem.asInstanceOf[IterElem[_, _]].eRow
-      val materialized = callMethod(pExp, pExp.elem, "materialize", cloneFun(eRow))
+      val eRow = pExp.elem.asInstanceOf[RelationElem[_, _]].eRow
       val comparator = generateComparator(p, by, inputs)(eRow)
-      callMethod(materialized, pExp.elem, "sort", comparator)
+      callMethod(pExp, pExp.elem, "sort", comparator)
     case GroupBy(agg, by) =>
       agg match {
         case Project(p, columns) =>
@@ -253,7 +253,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           joinsExp
         case _ =>
           val joinsElem = joinsExp.elem
-          val eRow = joinsElem.asInstanceOf[IterElem[_, _]].eRow
+          val eRow = joinsElem.asInstanceOf[RelationElem[_, _]].eRow
           callMethod(joinsExp, joinsElem, "filter", generateLambdaExpr(p, conjuncts, inputs)(eRow))
       }
     case Project(p, columns) =>
@@ -261,10 +261,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         val pExp = generateOperator(p, inputs)
         columns.find(resolver.isAggregate) match {
           case None =>
-            pExp.elem.asInstanceOf[IterElem[_, _]].eRow match {
+            pExp.elem.asInstanceOf[RelationElem[_, _]].eRow match {
               case eRow: Elem[row] =>
                 val structLambda = generateStructLambdaExpr(p, columns, inputs)(eRow)
-                val eRes = iterElement(structLambda.elem.asInstanceOf[FuncElem[_, _]].eRange)
+                val eRes = relationElement(structLambda.elem.asInstanceOf[FuncElem[_, _]].eRange)
                 callMethod(pExp, eRes, "map", structLambda)
             }
           case Some(aggColumn) =>
@@ -437,7 +437,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       struct(outputFields: _*)
     }
 
-    pExp.elem.asInstanceOf[IterElem[_, _]].eRow match {
+    pExp.elem.asInstanceOf[RelationElem[_, _]].eRow match {
       case eRow: Elem[row] =>
         implicit val eRow0 = eRow
 
@@ -493,26 +493,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               }
               val eK = mapKey.elem.eRange
 
-              val packKey = inferredFun(eRow) { x =>
-                def pack[A](x: Exp[A]): Exp[String] = x.elem.asInstanceOf[TypeDesc] match {
-                  case StructElem(_, fieldElems) =>
-                    val separator = toRep("|||")
-                    fieldElems match {
-                      case Seq() =>
-                        StringObject.empty
-                      case _ =>
-                        fieldElems.map { case (name, _) => pack(field(x.asRep[Struct], name)) }.reduce(_ + separator + _)
-                    }
-                  case _ =>
-                    toPlatformString(x)
-                }
-
-                pack(mapKey(x))
-              }
-
               val eKV = keyValElem(eK, eV)
 
-              val reduced = callMethod(pExp, iterElement(eKV), "mapReduce", mapKey, packKey, newValue, reduce)
+              val reduced = callMethod(pExp, relationElement(eKV), "mapReduce", mapKey, newValue, reduce)
 
               val finalProjection = inferredFun(eKV) { in =>
                 val key = field(in, keyFld).asRep[Struct]
@@ -523,7 +506,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
               (reduced, finalProjection)
             } else {
-              val reduced = callMethod(pExp, iterElement(eV), "reduce", reduce, newValue)
+              val reduced = callMethod(pExp, relationElement(eV), "reduce", reduce, newValue)
 
               val finalProjection = inferredFun(eV) { in =>
                 aggFinalResult(normalizedColumns, Nil, aggregates, null, in.asRep[Struct])
@@ -533,7 +516,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             }
 
             val eOut = finalProjection.elem.asInstanceOf[FuncElem[_, _]].eRange
-            callMethod(reduced, iterElement(eOut), "map", finalProjection)
+            callMethod(reduced, relationElement(eOut), "map", finalProjection)
         }
     }
   }
@@ -658,12 +641,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             !!!(s"Arithmetic operation on a multi-field struct ${r.toStringWithType}", l, r)
           }
         // zipWith for two iterators?
-        case (eL: IterElem[a, _], _) =>
+        case (eL: RelationElem[a, _], _) =>
           // TODO verify that l itself isn't used elsewhere, same below
-          val l1 = advanceIter(l.asRep[Iter[a]])._1
+          val l1 = l.asRep[Relation[a]].onlyValue()
           widen(l1, r)
-        case (_, eR: IterElem[b, _]) =>
-          val r1 = advanceIter(r.asRep[Iter[b]])._1
+        case (_, eR: RelationElem[b, _]) =>
+          val r1 = r.asRep[Relation[b]].onlyValue()
           widen(l, r1)
         case (DoubleElement, _) =>
           implicit val numR = getNumeric(eR)
@@ -914,11 +897,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case InExpr(expr, query) =>
       val exprExp = generateExpr(expr, inputs)
       val queryExp = generateOperator(query.operator, inputs)
-      val queryIterElem = queryExp.elem.asInstanceOf[IterElem[_, _]]
-      val f = inferredFun(queryIterElem.eRow) { _.asRep[Any] === exprExp }
-      callMethod(queryExp, queryIterElem, "filter", f) match {
-        case filtered: RIter[a] @unchecked =>
-          proxyIter(filtered).isEmpty
+      val queryRelationElem = queryExp.elem.asInstanceOf[RelationElem[_, _]]
+      val f = inferredFun(queryRelationElem.eRow) { _.asRep[Any] === exprExp }
+      callMethod(queryExp, queryRelationElem, "filter", f) match {
+        case filtered: RRelation[a] @unchecked =>
+          proxyRelation(filtered).isEmpty
       }
     case FuncExpr(name, args) =>
       val argExps = args.map(generateExpr(_, inputs))
