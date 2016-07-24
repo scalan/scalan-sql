@@ -64,38 +64,38 @@ object ScalanSqlRootBuild extends Build {
   lazy val scalanCore        = scalanDependency("scalan-core")
   lazy val scalanLua         = scalanDependency("scalan-lua-backend-core")
 
-  lazy val testQueries = Project(id = "scalan-sql-test-queries", base = file("scalan-sql-test-queries")).
-    settings(commonSettings: _*)
+  lazy val testQueries = Project(
+    id = "scalan-sql-test-queries",
+    base = file("scalan-sql-test-queries"))
+    .settings(commonSettings: _*)
 
-  lazy val parser = Project(
-    id = "scalan-sql-parser",
-    base = file("scalan-sql-parser")).addTestConfigsAndCommonSettings.
-    settings(libraryDependencies ++= Seq(
+  lazy val parser = Project(id = "scalan-sql-parser", base = file("scalan-sql-parser"))
+    .addTestConfigsAndCommonSettings
+    .settings(libraryDependencies ++= Seq(
       "org.scala-lang.modules" %% "scala-parser-combinators" % "1.0.4",
       scalanCommon % "test" classifier "tests",
       scalanMeta
-    )).dependsOn(testQueries % "test->test")
+    ))
+    .dependsOn(testQueries % "test->test")
 
-  lazy val meta = Project(
-    id = "scalan-sql-meta",
-    base = file("scalan-sql-meta")).addTestConfigsAndCommonSettings.
-    settings(fork in run := true, libraryDependencies ++= Seq(scalanMeta)).
-    dependsOn(parser)
+  lazy val meta = Project(id = "scalan-sql-meta", base = file("scalan-sql-meta"))
+    .addTestConfigsAndCommonSettings
+    .settings(fork in run := true, libraryDependencies ++= Seq(scalanMeta))
+    .dependsOn(parser)
 
-  lazy val core = Project(
-    id = "scalan-sql-core",
-    base = file("scalan-sql-core")).addTestConfigsAndCommonSettings.
-    settings(libraryDependencies ++= Seq(
+  lazy val core = Project(id = "scalan-sql-core", base = file("scalan-sql-core"))
+    .addTestConfigsAndCommonSettings
+    .settings(libraryDependencies ++= Seq(
       scalanCommon, scalanCommon % "test" classifier "tests",
       scalanCore, scalanCore % "test" classifier "tests",
       scalanLua
-    )).dependsOn(parser, testQueries % "test->test")
+    ))
+    .dependsOn(parser, testQueries % "test->test")
 
-  lazy val root = Project(
-    id = "scalan-sql",
-    base = file(".")).addTestConfigsAndCommonSettings
-      .aggregate(testQueries, parser, meta, core)
-      .settings(publishArtifact := false)
+  lazy val root = Project(id = "scalan-sql", base = file("."))
+    .addTestConfigsAndCommonSettings
+    .aggregate(testQueries, parser, meta, core)
+    .settings(publishArtifact := false)
 
   publishTo in ThisBuild := {
     val nexus = "http://10.122.85.37:9081/nexus/"
