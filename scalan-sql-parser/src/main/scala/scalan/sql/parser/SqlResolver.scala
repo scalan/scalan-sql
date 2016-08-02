@@ -329,10 +329,14 @@ class SqlResolver(ddl: String) extends SqlParser {
       BinOpExpr(And, left, right)
   }
 
+  // FIXME should probably be done in SqlBridge, and if here, differently
+  // e.g. return list of conjuncts instead of a single expression?
   def optimize(op: Operator, predicate: Expression): (Operator, Expression) = op match {
     case Join(outer, inner, joinType, joinSpec) =>
       if (!using(inner, predicate))
         (Join(Filter(outer, predicate), inner, joinType, joinSpec), Literal(true, BoolType))
+      else if (!using(outer, predicate))
+        (Join(outer, Filter(inner, predicate), joinType, joinSpec), Literal(true, BoolType))
       else
         predicate match {
           case BinOpExpr(And, l, r) =>
