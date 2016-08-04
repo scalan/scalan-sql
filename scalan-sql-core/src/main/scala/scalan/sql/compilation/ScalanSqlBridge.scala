@@ -103,100 +103,84 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case _ => Iterator.empty
   }
 
-  // TODO replace all calls by actual method calls
-  def callMethod[A](obj: Rep[_], eRes: Elem[A], methodName: String, args: AnyRef*): Rep[A] = {
-    val e = obj.elem
-    val clazz = e.runtimeClass
-    val argClasses = args.map {
-      case _: Elem[_] => classOf[Elem[_]]
-      case _: Cont[_] => classOf[Cont[Any]]
-      // TODO to get rid of this special case, get all methods and find one by name and acceptance of params
-      case _: JoinType => classOf[JoinType]
-      case _ => classOf[AnyRef]
-    }
-    val m = clazz.getMethod(methodName, argClasses:_*)
-    val res = mkMethodCall(obj, m, args.toList, false, eRes)
-    res.asInstanceOf[Rep[A]]
-  }
-
   def generateJoin(outer: Operator, inner: Operator, joinType: JoinType, joinSpec: JoinSpec, inputs: ExprInputs) = {
-    val outerExp = generateOperator(outer, inputs)
-    val innerExp = generateOperator(inner, inputs)
-    val outerRowElem = outerExp.elem.asInstanceOf[RelationElem[_, _]].eRow
-    val innerRowElem = innerExp.elem.asInstanceOf[RelationElem[_, _]].eRow
-    val eRes = relationElement(pairElement(outerRowElem, innerRowElem))
+    (generateOperator(outer, inputs), generateOperator(inner, inputs)) match {
+      case (outerExp: RRelation[a] @unchecked, innerExp: RRelation[b] @unchecked) =>
+        val outerRowElem = outerExp.elem.eRow
+        val innerRowElem = innerExp.elem.eRow
 
-    val (outerJoinColumns, innerJoinColumns) = joinSpec match {
-      case Natural =>
-        val allOuterColumnNames = outerRowElem.asInstanceOf[StructElem[_]].fieldNames
-        val allInnerColumnNames = innerRowElem.asInstanceOf[StructElem[_]].fieldNames
-        val commonColumns = allOuterColumnNames.intersect(allInnerColumnNames).map(ColumnRef(None, _))
-        (commonColumns, commonColumns)
-      case Using(columnNames) =>
-        val columns = columnNames.map(ColumnRef(None, _))
-        (columns, columns)
-      case On(condition) =>
-        withContext(outer) {
-          val OuterScopeName = currentScopeName
-          withContext(inner) {
-            val InnerScopeName = currentScopeName
+        val (outerJoinColumns, innerJoinColumns) = joinSpec match {
+          case Natural =>
+            val allOuterColumnNames = outerRowElem.asInstanceOf[StructElem[_]].fieldNames
+            val allInnerColumnNames = innerRowElem.asInstanceOf[StructElem[_]].fieldNames
+            val commonColumns = allOuterColumnNames.intersect(allInnerColumnNames).map(ColumnRef(None, _))
+            (commonColumns, commonColumns)
+          case Using(columnNames) =>
+            val columns = columnNames.map(ColumnRef(None, _))
+            (columns, columns)
+          case On(condition) =>
+            withContext(outer) {
+              val OuterScopeName = currentScopeName
+              withContext(inner) {
+                val InnerScopeName = currentScopeName
 
-            def columns(cond: Expression): List[(ColumnRef, ColumnRef)] = cond match {
-              case BinOpExpr(SqlAST.And, l, r) =>
-                columns(l) ++ columns(r)
-              case BinOpExpr(Eq, l: ColumnRef, r: ColumnRef) =>
-                val bindingL = resolver.lookup(l)
-                val bindingR = resolver.lookup(r)
-                bindingL.scope match {
-                  case OuterScopeName =>
-                    if (bindingR.scope == InnerScopeName)
-                      List((l, r))
-                    else
-                      !!!(s"$l and $r must be columns on opposing join sides", outerExp, innerExp)
-                  case InnerScopeName =>
-                    if (bindingR.scope == OuterScopeName)
-                      List((r, l))
-                    else
-                      !!!(s"$l and $r must be columns on opposing join sides", outerExp, innerExp)
+                def columns(cond: Expression): List[(ColumnRef, ColumnRef)] = cond match {
+                  case BinOpExpr(SqlAST.And, l, r) =>
+                    columns(l) ++ columns(r)
+                  case BinOpExpr(Eq, l: ColumnRef, r: ColumnRef) =>
+                    val bindingL = resolver.lookup(l)
+                    val bindingR = resolver.lookup(r)
+                    bindingL.scope match {
+                      case OuterScopeName =>
+                        if (bindingR.scope == InnerScopeName)
+                          List((l, r))
+                        else
+                          !!!(s"$l and $r must be columns on opposing join sides", outerExp, innerExp)
+                      case InnerScopeName =>
+                        if (bindingR.scope == OuterScopeName)
+                          List((r, l))
+                        else
+                          !!!(s"$l and $r must be columns on opposing join sides", outerExp, innerExp)
+                      case _ =>
+                        !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", outerExp, innerExp)
+                    }
                   case _ =>
-                    !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", outerExp, innerExp)
+                    !!!(s"Unsupported join condition: $cond", outerExp, innerExp)
                 }
-              case _ =>
-                !!!(s"Unsupported join condition: $cond", outerExp, innerExp)
-            }
 
-            columns(condition).unzip
+                columns(condition).unzip
+              }
+            }
+        }
+
+        def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ColumnRef]) = inferredFun(elem) { x =>
+          withContext(op) {
+            def column(column: ColumnRef) =
+              ExprInputs(currentScopeName -> x).resolveColumn(column)
+
+            columns match {
+              case Seq() =>
+                !!!(s"Join using empty column list", outerExp, innerExp)
+              case Seq(col) =>
+                column(col)
+              case _ =>
+                val fields = columns.map(column _)
+                tupleStruct(fields: _*)
+            }
           }
         }
-    }
 
-    def keyFun(elem: Elem[_], op: Operator, columns: Seq[ColumnRef]) = inferredFun(elem) { x =>
-      withContext(op) {
-        def column(column: ColumnRef) =
-          ExprInputs(currentScopeName -> x).resolveColumn(column)
-
-        columns match {
-          case Seq() =>
-            !!!(s"Join using empty column list", outerExp, innerExp)
-          case Seq(col) =>
-            column(col)
-          case _ =>
-            val fields = columns.map(column _)
-            tupleStruct(fields: _*)
+        val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
+        val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
+        if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
+          !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
+            outerExp, innerExp, outerKeyFun, innerKeyFun)
         }
-      }
+        if (joinType != Inner) {
+          !!!("Non-inner joins are not supported yet", outerExp, innerExp)
+        }
+        outerExp.join(innerExp, outerKeyFun, innerKeyFun)
     }
-
-    val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
-    val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
-    if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
-      !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
-        outerExp, innerExp, outerKeyFun, innerKeyFun)
-    }
-    if (joinType != Inner) {
-      !!!("Non-inner joins are not supported yet", outerExp, innerExp)
-    }
-    callMethod(outerExp, eRes, "join", innerExp, outerKeyFun, innerKeyFun)
   }
 
   def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = op match {
@@ -231,48 +215,51 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
       inputs(relationName).asInstanceOf[RFunc[Int, Relation[_]]](fakeDep)
     case OrderBy(p, by) =>
-      val pExp = generateOperator(p, inputs)
-      val eRow = pExp.elem.asInstanceOf[RelationElem[_, _]].eRow
-      val comparator = generateComparator(p, by, inputs)(eRow)
-      callMethod(pExp, pExp.elem, "sort", comparator)
+      generateOperator(p, inputs) match {
+        case pExp: RRelation[a] @unchecked =>
+          val eRow = pExp.elem.eRow
+          val comparator = generateComparator(p, by, inputs)(eRow)
+          pExp.sort(comparator)
+      }
     case GroupBy(agg, by) =>
       agg match {
         case Project(p, columns) =>
           withContext(p) {
-            val pExp = generateOperator(p, inputs)
-            generateAggregate(columns, by, pExp, inputs)
+            generateOperator(p, inputs) match {
+              case pExp: RRelation[a] @unchecked =>
+                generateAggregate(columns, by, pExp, inputs)
+            }
           }
         case _ => throw SqlException("Unsupported group-by clause")
       }
 
     case Filter(p, predicate) =>
       val (joins, conjuncts) = resolver.optimize(p, predicate)
-      val joinsExp = generateOperator(joins, inputs)
-      conjuncts match {
-        case Literal(_, _) => // Is this right?
-          joinsExp
-        case _ =>
-          val joinsElem = joinsExp.elem
-          val eRow = joinsElem.asInstanceOf[RelationElem[_, _]].eRow
-          callMethod(joinsExp, joinsElem, "filter", generateLambdaExpr(p, conjuncts, inputs)(eRow))
+      generateOperator(joins, inputs) match {
+        case joinsExp: RRelation[a] @unchecked =>
+          conjuncts match {
+            case Literal(_, _) => // Is this right?
+              joinsExp
+            case _ =>
+              val eRow = joinsExp.elem.eRow
+              joinsExp.filter(generateLambdaExpr(p, conjuncts, inputs)(eRow).asRep[a => Boolean])
+          }
       }
     case Project(p, columns) =>
       withContext(p) {
-        val pExp = generateOperator(p, inputs)
-        columns.find(resolver.isAggregate) match {
-          case None =>
-            pExp.elem.asInstanceOf[RelationElem[_, _]].eRow match {
-              case eRow: Elem[row] =>
-                val structLambda = generateStructLambdaExpr(p, columns, inputs)(eRow)
-                val eRes = relationElement(structLambda.elem.asInstanceOf[FuncElem[_, _]].eRange)
-                callMethod(pExp, eRes, "map", structLambda)
-            }
-          case Some(aggColumn) =>
-            columns.find(c => !resolver.isAggregate(c)) match {
+        generateOperator(p, inputs) match {
+          case pExp: RRelation[a] @unchecked =>
+            columns.find(resolver.isAggregate) match {
               case None =>
-                generateAggregate(columns, Nil, pExp, inputs)
-              case Some(nonAggColumn) =>
-                !!!(s"Query contains both aggregate $aggColumn and non-aggregate $nonAggColumn", pExp)
+                val structLambda = generateStructLambdaExpr(p, columns, inputs)(pExp.elem.eRow).asRep[a => Any]
+                pExp.map(structLambda)
+              case Some(aggColumn) =>
+                columns.find(c => !resolver.isAggregate(c)) match {
+                  case None =>
+                    generateAggregate(columns, Nil, pExp, inputs)
+                  case Some(nonAggColumn) =>
+                    !!!(s"Query contains both aggregate $aggColumn and non-aggregate $nonAggColumn", pExp)
+                }
             }
         }
       }
@@ -297,7 +284,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     findInput(resolver.currScope)
   }
 
-  def generateAggregate(columns: List[ProjectionColumn], groupedBy: List[Expression], pExp: Exp[_], inputs: ExprInputs) = {
+  def generateAggregate[Row](columns: List[ProjectionColumn], groupedBy: List[Expression], pExp: Exp[Relation[Row]], inputs: ExprInputs) = {
     def simplifyAgg(x: Expression): Expression = x match {
       case AggregateExpr(Count, false, _) =>
         CountAllExpr
@@ -381,7 +368,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       case _ => getExprType(agg.value)
     }
 
-    // casts of Elem[_] to Any before matching are workarounds for https://issues.scala-lang.org/browse/SI-9779
+    // casts of Elem[_] to TypeDesc before matching are workarounds for https://issues.scala-lang.org/browse/SI-9779
     def aggInitialValue(agg: AggregateExpr): Exp[_] =
       agg.op match {
         case Count =>
@@ -435,86 +422,79 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       struct(outputFields: _*)
     }
 
-    pExp.elem.asInstanceOf[RelationElem[_, _]].eRow match {
-      case eRow: Elem[row] =>
-        implicit val eRow0 = eRow
+    implicit val eRow = pExp.elem.eRow
 
-        val normalizedColumns = columns.map { col =>
-          val normalized = simplifyAgg(col.expr)
-          col.copy(expr = normalized)
-        }
+    val normalizedColumns = columns.map { col =>
+      val normalized = simplifyAgg(col.expr)
+      col.copy(expr = normalized)
+    }
 
-        val aggregates = normalizedColumns.flatMap { col =>
-          extractAggregateExprs(col.expr)
-        }.distinct
+    val aggregates = normalizedColumns.flatMap { col =>
+      extractAggregateExprs(col.expr)
+    }.distinct
 
-        if (aggregates.exists(_.distinct)) {
-          !!!(s"Distinct aggregates are not supported yet", pExp)
-        }
+    if (aggregates.exists(_.distinct)) {
+      !!!(s"Distinct aggregates are not supported yet", pExp)
+    }
 
-        val eV0 = structElement(aggregates.zipWithIndex.map { case (agg, i) => tupleFN(i) -> aggElem(agg)})
-        eV0.asInstanceOf[Elem[_]] match {
-          case eV: Elem[v] =>
-            implicit val eV0 = eV
+    val eV0 = structElement(aggregates.zipWithIndex.map { case (agg, i) => tupleFN(i) -> aggElem(agg)})
+    eV0.asInstanceOf[Elem[_]] match {
+      case eV: Elem[v] =>
+        implicit val eV0 = eV
 
-            val newValue = thunk_create { tupleStruct(aggregates.map(aggInitialValue): _*).asRep[v] }
-            val reduce = fun[(v, row), v] {
-              case Pair(x, y) =>
-                val inputs1 = inputs + (currentScopeName -> y)
-                eV match {
-                  case se: StructElem[_] =>
-                    val resFields = aggregates.zip(se.fields).map {
-                      case (agg, (name, eF: Elem[f])) =>
-                        val x1 = field(x.asRep[Struct], name).asRep[f]
-                        val y1 = aggOperand(agg, inputs1).asRep[f]
-                        (name, aggCombine(agg, x1, y1)(eF))
-                    }
-                    struct(se.structTag.asInstanceOf[StructTag[Struct]], resFields).asRep[v]
-                  case _ =>
-                    aggCombine(aggregates(0), x.asRep[v], y.asRep[v])(eV)
+        val newValue = thunk_create { tupleStruct(aggregates.map(aggInitialValue): _*).asRep[v] }
+        val reduce = fun[(v, Row), v] {
+          case Pair(x, y) =>
+            val inputs1 = inputs + (currentScopeName -> y)
+            eV match {
+              case se: StructElem[_] =>
+                val resFields = aggregates.zip(se.fields).map {
+                  case (agg, (name, eF: Elem[f])) =>
+                    val x1 = field(x.asRep[Struct], name).asRep[f]
+                    val y1 = aggOperand(agg, inputs1).asRep[f]
+                    (name, aggCombine(agg, x1, y1)(eF))
                 }
+                struct(se.structTag.asInstanceOf[StructTag[Struct]], resFields).asRep[v]
+              case _ =>
+                aggCombine(aggregates(0), x.asRep[v], y.asRep[v])(eV)
             }
+        }
 
-            val (reduced, finalProjection) = if (groupedBy.nonEmpty) {
-              val mapKey = inferredFun(eRow) { x =>
-                val inputs1 = inputs + (currentScopeName -> x)
-                val byExps = groupedBy.map(generateExpr(_, inputs1))
-                // TODO optimize case of a single expression (commented out below, in mapValue as well)
-                // as part of Slicing or a separate pass?
-                tupleStruct(byExps: _*)
-                //              byExps match {
-                //                case List(byExp) =>
-                //                  byExp
-                //                case _ =>
-                //                  tupleStruct(byExps: _*)
-                //              }
-              }
-              val eK = mapKey.elem.eRange
+        if (groupedBy.nonEmpty) {
+          val mapKey = inferredFun(eRow) { x =>
+            val inputs1 = inputs + (currentScopeName -> x)
+            val byExps = groupedBy.map(generateExpr(_, inputs1))
+            // TODO optimize case of a single expression (commented out below, in mapValue as well)
+            // as part of Slicing or a separate pass?
+            tupleStruct(byExps: _*)
+            //              byExps match {
+            //                case List(byExp) =>
+            //                  byExp
+            //                case _ =>
+            //                  tupleStruct(byExps: _*)
+            //              }
+          }
+          val eK = mapKey.elem.eRange
 
-              val eKV = keyValElem(eK, eV)
+          val eKV = keyValElem(eK, eV)
 
-              val reduced = callMethod(pExp, relationElement(eKV), "mapReduce", mapKey, newValue, reduce)
+          val reduced = pExp.mapReduce(mapKey, newValue, reduce)
 
-              val finalProjection = inferredFun(eKV) { in =>
-                val key = field(in, keyFld).asRep[Struct]
-                val value = field(in, valFld).asRep[Struct]
-                val result = aggFinalResult(normalizedColumns, groupedBy, aggregates, key, value)
-                result
-              }
+          val finalProjection = inferredFun(eKV) { in =>
+            val key = field(in, keyFld).asRep[Struct]
+            val value = field(in, valFld).asRep[Struct]
+            aggFinalResult(normalizedColumns, groupedBy, aggregates, key, value)
+          }
 
-              (reduced, finalProjection)
-            } else {
-              val reduced = callMethod(pExp, relationElement(eV), "reduce", reduce, newValue)
+          reduced.map(finalProjection)
+        } else {
+          val reduced = pExp.reduce(reduce, newValue)
 
-              val finalProjection = inferredFun(eV) { in =>
-                aggFinalResult(normalizedColumns, Nil, aggregates, null, in.asRep[Struct])
-              }
+          val finalProjection = inferredFun(eV) { in =>
+            aggFinalResult(normalizedColumns, Nil, aggregates, null, in.asRep[Struct])
+          }
 
-              (reduced, finalProjection)
-            }
-
-            val eOut = finalProjection.elem.asInstanceOf[FuncElem[_, _]].eRange
-            callMethod(reduced, relationElement(eOut), "map", finalProjection)
+          reduced.map(finalProjection)
         }
     }
   }
@@ -847,7 +827,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           - opdExp
       }
     case ExistsExpr(q) =>
-      !callMethod(generateOperator(q, inputs), BooleanElement, "isEmpty")
+      generateOperator(q, inputs) match {
+        case qExp: RRelation[a] @unchecked =>
+          !qExp.isEmpty
+      }
     case LikeExpr(l, r, escape) =>
       patternMatch(l, r, escape, inputs)
     case l @ Literal(v, t) =>
@@ -894,12 +877,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       list.map(x => exprExp === generateExpr(x, inputs)).reduce(_ || _)
     case InExpr(expr, query) =>
       val exprExp = generateExpr(expr, inputs)
-      val queryExp = generateOperator(query, inputs)
-      val queryRelationElem = queryExp.elem.asInstanceOf[RelationElem[_, _]]
-      val f = inferredFun(queryRelationElem.eRow) { _.asRep[Any] === exprExp }
-      callMethod(queryExp, queryRelationElem, "filter", f) match {
-        case filtered: RRelation[a] @unchecked =>
-          proxyRelation(filtered).isEmpty
+      generateOperator(query, inputs) match {
+        case queryExp: RRelation[a] @unchecked =>
+          val f = inferredFun(queryExp.elem.eRow) { _.asRep[Any] === exprExp }
+          !queryExp.filter(f).isEmpty
       }
     case FuncExpr(name, args) =>
       val argExps = args.map(generateExpr(_, inputs))

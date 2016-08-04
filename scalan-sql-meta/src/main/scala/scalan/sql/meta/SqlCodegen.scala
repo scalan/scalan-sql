@@ -350,7 +350,8 @@ class SqlCodegen extends SqlResolver("") {
     }
   }
 
-  def resultType(query: SelectStmt): String = {
+  def resultType(query:
+                 SelectStmt): String = {
     query.operator match {
       case OrderBy(p, by) => "Arr[" + operatorType(p) + "]"
       case Project(p, c) if isGrandAggregate(c) => "Rep[" + operatorType(p) + "]"
