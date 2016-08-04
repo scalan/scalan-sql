@@ -165,7 +165,7 @@ object SqlAST {
 
   sealed trait Expression
 
-  case class SelectExpr(stmt: SelectStmt) extends Expression
+  case class SelectExpr(op: Operator) extends Expression
 
   sealed trait BinOp
 
@@ -211,9 +211,9 @@ object SqlAST {
 
   case class InListExpr(left: Expression, right: ExprList) extends Expression
 
-  case class InExpr(left: Expression, right: SelectStmt) extends Expression
+  case class InExpr(left: Expression, subquery: Operator) extends Expression
 
-  case class ExistsExpr(query: Expression) extends Expression
+  case class ExistsExpr(op: Operator) extends Expression
 
   case class NegExpr(opd: Expression) extends Expression
 

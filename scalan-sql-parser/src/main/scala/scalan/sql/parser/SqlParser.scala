@@ -477,17 +477,17 @@ class SqlParser {
             notOpt(not, InListExpr(e1, e2))
         } |
         termExpression ~ (NOT.? <~ IN) ~ ("(" ~> selectStmt <~ ")") ^^ {
-          case e1 ~ not ~ e2 =>
-            notOpt(not, InExpr(e1, e2))
+          case e1 ~ not ~ SelectStmt(q2) =>
+            notOpt(not, InExpr(e1, q2))
         } |
         (termExpression <~ IS) ~ (NOT.? <~ NULL) ^^ {
           case e ~ not =>
             notOpt(not, IsNullExpr(e))
         } |
         NOT ~> termExpression ^^ { e => NotExpr(e) } |
-        NOT.? ~ (EXISTS ~> termExpression) ^^ {
-          case not ~ e =>
-            notOpt(not, ExistsExpr(e))
+        NOT.? ~ (EXISTS ~> "(" ~> selectStmt <~ ")") ^^ {
+          case not ~ SelectStmt(op) =>
+            notOpt(not, ExistsExpr(op))
           } |
         termExpression
 
@@ -598,9 +598,9 @@ class SqlParser {
         | cast
         | "(" ~> expression <~ ")"
         | function
-        | (ident <~ ".").? ~ ident ^^ { case tableOpt ~ name => ColumnRef(tableOpt, name)}
+        | (ident <~ ".").? ~ ident ^^ { case tableOpt ~ name => ColumnRef(tableOpt, name) }
         | signedExpression
-        | "(" ~> selectStmt <~ ")" ^^ { stmt => SelectExpr(stmt)}
+        | "(" ~> selectStmt <~ ")" ^^ { case SelectStmt(op) => SelectExpr(op) }
         )
   }
 

@@ -79,7 +79,7 @@ class SqlCodegen extends SqlResolver("") {
         val lCode = generateExpr(l)
         val rCode = generateExpr(r)
         s"($lCode $opStr $rCode)"
-      case ExistsExpr(q) => "(" + generateExpr(q) + ".count !== 0)"
+      case ExistsExpr(q) => "(" + generateOperator(q) + ".count !== 0)"
       case LikeExpr(l, r, escape) =>
         patternMatch(l, r, escape)
       case NegExpr(opd) => "-" + generateExpr(opd)
@@ -93,7 +93,7 @@ class SqlCodegen extends SqlResolver("") {
       case SelectExpr(s) => {
         val saveIndent = indent
         indent += "\t"
-        val subselect = "(" + generateOperator(s.operator) + ")"
+        val subselect = "(" + generateOperator(s) + ")"
         indent = saveIndent
         subselect
       }
@@ -112,7 +112,7 @@ class SqlCodegen extends SqlResolver("") {
       case InExpr(sel, query) => {
         val saveIndent = indent
         indent += "\t"
-        val subselect = "(" + generateOperator(query.operator) + ".where(e => e == " + generateExpr(sel) + ").count !== 0)"
+        val subselect = "(" + generateOperator(query) + ".where(e => e == " + generateExpr(sel) + ").count !== 0)"
         indent = saveIndent
         subselect
       }

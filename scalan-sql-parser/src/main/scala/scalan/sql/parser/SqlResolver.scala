@@ -50,13 +50,13 @@ class SqlResolver(ddl: String) extends SqlParser {
   def tablesInNestedSelects(e: Expression): Set[Table] = {
     e match {
       case BinOpExpr(op, l, r) => tablesInNestedSelects(l) ++ tablesInNestedSelects(r)
-      case ExistsExpr(q) => tablesInNestedSelects(q)
+      case ExistsExpr(q) => tables(q)
       case LikeExpr(l, r, _) => tablesInNestedSelects(l) ++ tablesInNestedSelects(r)
       case NegExpr(opd) => tablesInNestedSelects(opd)
       case NotExpr(opd) => tablesInNestedSelects(opd)
       case CastExpr(exp, typ) => tablesInNestedSelects(exp)
-      case SelectExpr(s) => tables(s.operator)
-      case InExpr(s, q) => tablesInNestedSelects(s) ++ tables(q.operator)
+      case SelectExpr(s) => tables(s)
+      case InExpr(s, q) => tablesInNestedSelects(s) ++ tables(q)
       case _ => Set()
     }
   }
@@ -301,7 +301,7 @@ class SqlResolver(ddl: String) extends SqlParser {
   def using(op: Operator, predicate: Expression): Boolean = {
     predicate match {
       case BinOpExpr(_, l, r) => using(op, l) || using(op, r)
-      case ExistsExpr(q) => using(op, q)
+      case ExistsExpr(q) => depends(op, q)
       case LikeExpr(l, r, escape) =>
         using(op, l) || using(op, r) || escape.exists(using(op, _))
       case NegExpr(opd) => using(op, opd)
@@ -309,12 +309,12 @@ class SqlResolver(ddl: String) extends SqlParser {
       case Literal(v, t) => false
       case CastExpr(exp, typ) => using(op, exp)
       case ref: ColumnRef => buildContext(op).resolve(ref).isDefined
-      case SelectExpr(s) => depends(op, s.operator)
+      case SelectExpr(s) => depends(op, s)
       case AggregateExpr(_, _, opd) => using(op, opd)
       case SubstrExpr(str, from, len) => using(op, str) || using(op, from) || using(op, len)
       case CaseWhenExpr(list) => using(op, list)
       case InListExpr(sel, lst) => using(op, sel) || using(op, lst)
-      case InExpr(sel, query) => using(op, sel) || depends(op, query.operator)
+      case InExpr(sel, query) => using(op, sel) || depends(op, query)
       case FuncExpr(name, args) => using(op, args)
       case _ => false
     }

@@ -326,8 +326,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         List(agg)
       case BinOpExpr(_, l, r) =>
         extractAggregateExprs(l) ++ extractAggregateExprs(r)
-      case ExistsExpr(q) =>
-        extractAggregateExprs(q)
       case LikeExpr(l, r, escape) =>
         extractAggregateExprs(l) ++ extractAggregateExprs(r) ++
           (escape match {
@@ -849,7 +847,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           - opdExp
       }
     case ExistsExpr(q) =>
-      !callMethod(generateExpr(q, inputs), BooleanElement, "isEmpty")
+      !callMethod(generateOperator(q, inputs), BooleanElement, "isEmpty")
     case LikeExpr(l, r, escape) =>
       patternMatch(l, r, escape, inputs)
     case l @ Literal(v, t) =>
@@ -883,7 +881,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           }
       }
     case SelectExpr(s) =>
-      generateOperator(s.operator, inputs)
+      generateOperator(s, inputs)
     case SubstrExpr(str, from, len) =>
       val strExp = generateExpr(str, inputs).asRep[String]
       val fromExp = generateExpr(from, inputs).asRep[Int]
@@ -896,7 +894,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       list.map(x => exprExp === generateExpr(x, inputs)).reduce(_ || _)
     case InExpr(expr, query) =>
       val exprExp = generateExpr(expr, inputs)
-      val queryExp = generateOperator(query.operator, inputs)
+      val queryExp = generateOperator(query, inputs)
       val queryRelationElem = queryExp.elem.asInstanceOf[RelationElem[_, _]]
       val f = inferredFun(queryRelationElem.eRow) { _.asRep[Any] === exprExp }
       callMethod(queryExp, queryRelationElem, "filter", f) match {
