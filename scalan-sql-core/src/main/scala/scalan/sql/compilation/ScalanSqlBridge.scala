@@ -183,7 +183,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
   }
 
-  def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = op match {
+  def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = ((op match {
     case Join(outer, inner, joinType, joinSpec) =>
       generateJoin(outer, inner, joinType, joinSpec, inputs)
     case ScanOrScanAlias(relationName, table) =>
@@ -270,7 +270,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       generateOperator(p, inputs)
     case _ =>
       ???(s"Failed to construct Scalan graph from SQL AST $op")
-  }
+  }): Exp[Relation[_]]).setMetadata(SqlOperatorKey)(op)
 
   private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
     def findInput(scope: resolver.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
@@ -773,7 +773,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     def apply(aggregates: List[AggregateExpr], value: Exp[Struct]) = new ExprInputs(Map.empty, aggregates, value)
   }
 
-  def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = expr match {
+def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
     case agg: AggregateExpr =>
       inputs.resolveAgg(agg)
     case c: ColumnRef =>
@@ -846,8 +846,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     case NullLiteral =>
       !!!("Nulls aren't supported")
-      // if we ever support null, how to determine type here?
-      // toRep(null: Any)(AnyElement)
+    // if we ever support null, how to determine type here?
+    // toRep(null: Any)(AnyElement)
     case CastExpr(exp, typ) =>
       generateExpr(exp, inputs) match {
         case exprExp: Exp[a] =>
@@ -891,7 +891,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           !!!(s"Failure to generate Scalan Exp for $name(${argExps.mkString(", ")})", e, argExps: _*)
       }
     case _ => throw new NotImplementedError(s"generateExpr($expr)")
-  }
+  }): Exp[_]).setMetadata(SqlExpressionKey)(expr)
 
   def funcExpr(name: String, argExps: List[Exp[_]]): Exp[_] = name match {
     case "strftime" =>

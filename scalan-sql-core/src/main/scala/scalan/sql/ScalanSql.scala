@@ -36,6 +36,11 @@ trait ScalanSql extends ScalanDsl with ItersDsl with RelationsDsl {
 
   val QueryTextKey = MetaKey[String]("queryText")
 
+  private implicit val sqlOperatorElem = new BaseElem[Operator](null)
+  private implicit val sqlExpressionElem = new BaseElem[Expression](null)
+  val SqlOperatorKey = MetaKey[Operator]("sql-origin-operator")
+  val SqlExpressionKey = MetaKey[Expression]("sql-origin-expression")
+
   // same as ToString, but without rewriting (x: String).toString => x
   // this way it can be used to generate to_lua_string in the end
   def toPlatformString[A](x: Rep[A]): Rep[String]
