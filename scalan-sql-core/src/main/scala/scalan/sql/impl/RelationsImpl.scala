@@ -4,7 +4,8 @@ import java.lang.reflect.Method
 import scalan._
 import scalan.common.Lazy
 import scala.reflect.runtime.universe._
-import scalan.common.Default
+import scala.reflect.runtime.universe.{WeakTypeTag, weakTypeTag}
+import scalan.meta.ScalanAst._
 
 package impl {
 // Abs -----------------------------------

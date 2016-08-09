@@ -2,21 +2,20 @@ package scalan.sql
 
 import java.sql.{Date, Time, Timestamp}
 
-import scalan.{AnalyzingExp, _}
-import scala.reflect.runtime.universe._
-import scalan.common.Default
+import scalan._
+import scalan.sql.parser.SqlAST.{Expression, Operator}
 
 /**
   * Use this traits for the top level scalan.sql extensions, customizations and overrides
   */
 trait ScalanSql extends ScalanDsl with ItersDsl with RelationsDsl {
-  implicit val DateElement: Elem[Date] = new BaseElem()(weakTypeTag[Date], Default(new Date(0)))
+  implicit val DateElement: Elem[Date] = new BaseElem(new Date(0))
   implicit val DateOrdering: Ordering[Date] = Ordering.by(_.getTime)
 
-  implicit val TimeElement: Elem[Time] = new BaseElem()(weakTypeTag[Time], Default(new Time(0)))
+  implicit val TimeElement: Elem[Time] = new BaseElem(new Time(0))
   implicit val TimeOrdering: Ordering[Time] = Ordering.by(_.getTime)
 
-  implicit val TimestampElement: Elem[Timestamp] = new BaseElem()(weakTypeTag[Timestamp], Default(new Timestamp(0)))
+  implicit val TimestampElement: Elem[Timestamp] = new BaseElem(new Timestamp(0))
   implicit val TimestampOrdering: Ordering[Timestamp] = Ordering.by(_.getTime)
 
   implicit val BooleanNumeric: Numeric[Boolean] = new Numeric[Boolean] {

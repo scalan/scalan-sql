@@ -59,9 +59,6 @@ object SqlBoilerplateTool extends BoilerplateTool {
     baseContextTrait = "Scalan",
     seqContextTrait = "ScalanStd",
     stagedContextTrait = "ScalanExp",
-    extraImports = List(
-        "scala.reflect.runtime.universe._",
-        "scalan.common.Default"),
     entityTypeSynonyms = Map()
   )
 
