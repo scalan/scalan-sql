@@ -2,20 +2,7 @@ package scalan.sql.parser
 
 import scalan.sql.parser.SqlAST._
 
-class SqlResolver(ddl: String) extends SqlParser {
-  val schema = {
-    val script = parseDDL(ddl)
-
-    val tables = script.collect {
-      case CreateTableStmt(t) => (t.name, t)
-    }.toMap
-
-    val indices = script.collect {
-      case CreateIndexStmt(i) => i
-    }.groupBy(_.tableName)
-
-    Schema(tables, indices)
-  }
+class SqlResolver(val schema: Schema) {
   def table(name: String) = schema.table(name)
   def indices(tableName: String) = schema.indices(tableName)
 

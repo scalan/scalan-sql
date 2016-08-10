@@ -4,9 +4,9 @@ import java.sql.Date
 
 import scala.annotation.tailrec
 import scala.runtime.IntRef
-import scalan.sql.parser.{SqlAST, SqlResolver}
+import scalan.sql.parser.{SqlAST, SqlParser, SqlResolver}
 import SqlAST._
-import scalan.sql.{ScalanSqlExp}
+import scalan.sql.ScalanSqlExp
 
 object ScalanSqlBridge {
   val FakeDepName = "!_fake_dep_!"
@@ -26,10 +26,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case TimestampType => TimestampElement
   }
 
-  protected def initSqlResolver(p: SqlResolver): Unit = {}
+  protected lazy val parser = new SqlParser
 
-  protected val resolver = new SqlResolver(ddl)
-  initSqlResolver(resolver)
+  lazy val schema = parser.parseDDL(ddl)
+
+  protected lazy val resolver = new SqlResolver(schema)
 
   protected def currentScopeName = resolver.currScope.name
 
@@ -38,11 +39,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   val fakeDepField = (FakeDepName, IntElement)
 
   private val tableElems: Map[String, StructElem[Struct]] = {
-    resolver.parseDDL(ddl).collect {
-      case CreateTableStmt(table) =>
-        val fieldElems =
-          table.columns.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) } :+ fakeDepField
-        (table.name, structElement(fieldElems))
+    schema.tables.valuesIterator.map { table =>
+      val fieldElems =
+        table.columns.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) } :+ fakeDepField
+      (table.name, structElement(fieldElems))
     }
   }.toMap
 
@@ -60,7 +60,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def sqlQueryExp(query: String) = {
     assert(reuseDetector, "Instance of ScalanSqlBridge is being reused, please create a new one (based on a separate Scalan cake) for each query instead")
     reuseDetector = false
-    val parsedSql = resolver.parseSelect(query).operator
+    val parsedSql = parser.parseSelect(query).operator
     val tables = allTables(parsedSql).toSeq.distinct
 
     val inputRowElems = tables.map {

@@ -1,7 +1,7 @@
 package scalan.sql
 
 object TPCH {
-  val Schema =
+  val DDL =
     """
       |create table lineitem(
       |   l_orderkey integer,

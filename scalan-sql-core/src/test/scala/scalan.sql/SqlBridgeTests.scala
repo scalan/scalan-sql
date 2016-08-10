@@ -10,10 +10,8 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
   def createExpAndGraph(query: TestQuery): Unit
 
   def tpchBridge(scalan: ScalanSqlExp): ScalanSqlBridge[scalan.type] =
-    new ScalanSqlBridge[scalan.type](TPCH.Schema, scalan) {
-      override protected def initSqlResolver(p: SqlResolver) = {
-        p.registerFunctionType("strftime", BasicStringType)
-      }
+    new ScalanSqlBridge[scalan.type](TPCH.DDL, scalan) {
+      resolver.registerFunctionType("strftime", BasicStringType)
     }
 
   describe("TPCH") {

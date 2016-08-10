@@ -1,6 +1,5 @@
 package scalan.sql.parser
 
-import scala.collection.mutable
 import scala.util.parsing.combinator.PackratParsers
 import scala.util.parsing.combinator.lexical.StdLexical
 import scala.util.parsing.combinator.syntactical.StandardTokenParsers
@@ -11,9 +10,22 @@ import scala.util.parsing.input.NoPosition
 
 // see http://savage.net.au/SQL/sql-2003-2.bnf.html for full SQL grammar
 class SqlParser {
-  val grammar = new SqlGrammar
+  lazy val grammar = new SqlGrammar
 
-  def parseDDL(sql: String) = grammar.schema(sql)
+  def parseDDL(sql: String) = {
+    val script = grammar.schema(sql)
+
+    val tables = script.collect {
+      case CreateTableStmt(t) => (t.name, t)
+    }.toMap
+
+    val indices = script.collect {
+      case CreateIndexStmt(i) => i
+    }.groupBy(_.tableName)
+
+    Schema(tables, indices)
+  }
+
   def parseSelect(sql: String) = grammar.select(sql)
 
   class SqlLexical(val keywords: Seq[String]) extends StdLexical {

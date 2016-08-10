@@ -6,7 +6,7 @@ import scalan.sql.TPCH
 class SqlParserTests extends BaseNestedTests {
   describe("Can parse TPCH queries") {
     val parser = new SqlParser
-    parser.parseDDL(TPCH.Schema)
+    parser.parseDDL(TPCH.DDL)
 
     // just verifies that queries can be parsed
     TPCH.allQueries.foreach {
