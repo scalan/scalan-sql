@@ -46,12 +46,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
   }.toMap
 
-  private def withContext[A](p: Operator)(block: => A) = {
-    resolver.pushContext(p)
-    val result = block
-    resolver.popContext()
-    result
-  }
+  import resolver.withContext
 
   // could be moved into ExprInputs, but this allows to avoid accidental reuse (see assert below)
   // Plus ExprInputs would have to be threaded through more than now

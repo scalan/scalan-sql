@@ -23,13 +23,12 @@ class SqlResolver(val schema: Schema) {
 
   var currScope: Scope = Scope(new GlobalContext, None, 0, "scalan")
 
-  def pushContext(opd: Operator) = {
+  def withContext[A](op: Operator)(block: => A) = {
     currScope = Scope(currScope.ctx, Some(currScope), currScope.nesting + 1, if (currScope.nesting == 0) "r" else "r" + currScope.nesting.toString)
-    currScope.ctx = buildContext(opd)
-  }
-
-  def popContext() = {
+    currScope.ctx = buildContext(op)
+    val result = block
     currScope = currScope.outer.get
+    result
   }
 
   def lookup(col: ColumnRef): Binding = currScope.lookup(col)
