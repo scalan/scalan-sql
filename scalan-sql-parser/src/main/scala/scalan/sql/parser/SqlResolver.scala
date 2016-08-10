@@ -83,13 +83,7 @@ class SqlResolver(ddl: String) extends SqlParser {
     }
   }
 
-  def pathString(path: List[String]): String = pathString(currScope.name, path)
-
-  def pathString(scope: String, path: List[String]): String = scope + "." + path.mkString(".")
-
-  case class Binding(scope: String, path: List[String], column: Column) {
-    def asScalaCode = pathString(scope, path)
-  }
+  case class Binding(scope: String, path: List[String], column: Column)
 
   abstract class Context {
     def resolve(ref: ColumnRef): Option[Binding]
