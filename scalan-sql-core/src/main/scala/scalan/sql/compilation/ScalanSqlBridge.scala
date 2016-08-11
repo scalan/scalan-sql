@@ -692,7 +692,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       val binding = resolver.lookup(c)
       scopes.get(binding.scope) match {
         case None =>
-          !!!(s"Failed to resolve ${c.asString}. Binding is $binding.")
+          !!!(s"Failed to resolve $c. Binding is $binding.")
         case Some(x) =>
           def _1(y: Exp[_]) =
             y.elem match {

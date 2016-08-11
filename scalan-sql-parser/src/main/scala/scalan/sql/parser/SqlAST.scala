@@ -44,37 +44,45 @@ object SqlAST {
   trait ColumnType {
     def sqlName: String
     def scalaName: String
+    override def toString = sqlName
   }
 
   abstract class SimpleColumnType[A](val sqlName: String)(implicit tag: ClassTag[A]) extends ColumnType {
     val scalaName = tag.toString
   }
 
-  case object IntType extends SimpleColumnType[Int]("integer")
-  case object BigIntType extends SimpleColumnType[Long]("bigint")
-  case object SmallIntType extends SimpleColumnType[Short]("smallint")
-  case object TinyIntType extends SimpleColumnType[Short]("tinyint")
+  case object IntType extends SimpleColumnType[Int]("INTEGER")
+  case object BigIntType extends SimpleColumnType[Long]("BIGINT")
+  case object SmallIntType extends SimpleColumnType[Short]("SMALLINT")
+  case object TinyIntType extends SimpleColumnType[Short]("TINYINT")
 
-  case object FloatType extends SimpleColumnType[Float]("float")
-  case object DoubleType extends SimpleColumnType[Double]("double")
+  case object FloatType extends SimpleColumnType[Float]("FLOAT")
+  case object DoubleType extends SimpleColumnType[Double]("DOUBLE")
   case class DecimalType(totalDigits: Option[Int], fractionalDigits: Option[Int]) extends ColumnType {
-    def sqlName = "decimal"
+    val sqlName = "DECIMAL" + ((totalDigits, fractionalDigits) match {
+      case (None, None) => ""
+      case (Some(t), None) => s"($t)"
+      case (None, Some(f)) => "s(, $f)" // not actually legal
+      case (Some(t), Some(f)) => s"($t, $f)"
+    })
     val scalaName = classTag[BigDecimal].toString
   }
 
-  case object BoolType extends SimpleColumnType[Boolean]("bool")
+  case object BoolType extends SimpleColumnType[Boolean]("BOOL")
 
-  case class StringType(fixed: Boolean, length: Option[Int]) extends SimpleColumnType[String](if (fixed) "char" else "varchar")
+  case class StringType(fixed: Boolean, length: Option[Int]) extends SimpleColumnType[String](
+    (if (fixed) "CHAR" else "VARCHAR") + length.fold("")(l => s"($l)")
+  )
   val BasicStringType = StringType(false, None)
 
-  case object BlobType extends SimpleColumnType[Array[Byte]]("blob")
+  case object BlobType extends SimpleColumnType[Array[Byte]]("BLOB")
 
-  case object DateType extends SimpleColumnType[java.sql.Date]("date")
-  case object TimeType extends SimpleColumnType[java.sql.Time]("time")
-  case object TimestampType extends SimpleColumnType[java.sql.Timestamp]("timestamp")
+  case object DateType extends SimpleColumnType[java.sql.Date]("DATE")
+  case object TimeType extends SimpleColumnType[java.sql.Time]("TIME")
+  case object TimestampType extends SimpleColumnType[java.sql.Timestamp]("TIMESTAMP")
 
   case class EnumType(values: List[String]) extends ColumnType {
-    def sqlName = "enum"
+    val sqlName = s"ENUM(${values.mkString(", ")})"
     val scalaName = classTag[String].toString
   }
 
@@ -113,25 +121,55 @@ object SqlAST {
   case object FullOuter extends JoinType
   case object LeftSemi extends JoinType
 
-  abstract sealed trait Node[T <: Node[T]]
+  abstract sealed trait Node[T <: Node[T]] {
+    def noParentheses = false
+  }
+  private def p(x: Node[_]) = if (x.noParentheses) x.toString else s"($x)"
 
   abstract sealed class Operator extends Node[Operator]
 
-  case class Scan(tableName: String) extends Operator
+  case class Scan(tableName: String) extends Operator {
+    override def toString = tableName
+    override def noParentheses = true
+  }
 
-  case class Distinct(table: Operator) extends Operator
-  case class Union(left: Operator, right: Operator) extends Operator
-  case class Except(left: Operator, right: Operator) extends Operator
-  case class Intersect(left: Operator, right: Operator) extends Operator
+  case class Distinct(op: Operator) extends Operator {
+    override def toString = s"DISTINCT $op"
+  }
+  case class Union(left: Operator, right: Operator) extends Operator {
+    override def toString = s"${p(left)} UNION ${p(right)}"
+  }
+  case class Except(left: Operator, right: Operator) extends Operator {
+    override def toString = s"${p(left)} UNION ${p(right)}"
+  }
+  case class Intersect(left: Operator, right: Operator) extends Operator {
+    override def toString = s"${p(left)} UNION ${p(right)}"
+  }
 
-  case class TableAlias(table: Operator, alias: String) extends Operator
+  case class TableAlias(parent: Operator, alias: String) extends Operator {
+    override def toString = s"${p(parent)} AS $alias"
+  }
 
   case class ProjectionColumn(expr: Expression, alias: Option[String])
-  case class Project(parent: Operator, columns: List[ProjectionColumn]) extends Operator
+  case class Project(parent: Operator, columns: List[ProjectionColumn]) extends Operator {
+    override def toString = {
+      val columns1 = columns.map {
+        case ProjectionColumn(expr, alias) => alias match {
+          case None => expr
+          case Some(a) => s"$expr AS $a"
+        }
+      }
+      s"SELECT ${columns1.mkString(", ")}\nFROM $parent"
+    }
+  }
 
-  case class Filter(parent: Operator, predicate: Expression) extends Operator
+  case class Filter(parent: Operator, predicate: Expression) extends Operator {
+    override def toString = s"$parent\nWHERE $predicate"
+  }
 
-  case class GroupBy(parent: Operator, columns: ExprList) extends Operator
+  case class GroupBy(parent: Operator, columns: ExprList) extends Operator {
+    override def toString = s"$parent\nGROUP BY ${columns.mkString(", ")}"
+  }
 
   abstract sealed class SortDirection
   case object Ascending extends SortDirection
@@ -142,22 +180,54 @@ object SqlAST {
   case object NullsLast extends NullsOrdering
   case object NullsOrderingUnspecified extends NullsOrdering
 
-  case class SortSpec(expr: Expression, direction: SortDirection, nulls: NullsOrdering)
+  case class SortSpec(expr: Expression, direction: SortDirection, nulls: NullsOrdering) {
+    override def toString = p(expr) + (direction match { case Ascending => " ASC"; case Descending => " DESC" }) + (nulls match {
+      case NullsFirst => " NULLS FIRST"
+      case NullsLast => " NULLS LAST"
+      case NullsOrderingUnspecified => ""
+    })
+  }
 
-  case class OrderBy(parent: Operator, columns: List[SortSpec]) extends Operator
+  case class OrderBy(parent: Operator, columns: List[SortSpec]) extends Operator {
+    override def toString = s"$parent\nORDER BY ${columns.mkString(", ")}"
+  }
 
-  case class Limit(parent: Operator, limit: Expression) extends Operator
+  case class Limit(parent: Operator, limit: Expression) extends Operator {
+    override def toString = s"$parent\nLIMIT $limit"
+  }
 
-  case class SubSelect(parent: Operator) extends Operator
+  case class SubSelect(parent: Operator) extends Operator {
+    override def toString = parent.toString
+  }
 
   sealed trait JoinSpec
   case class On(condition: Expression) extends JoinSpec
   case class Using(columns: ColumnList) extends JoinSpec
   case object Natural extends JoinSpec
 
-  case class Join(outer: Operator, inner: Operator, joinType: JoinType, spec: JoinSpec) extends Operator
-  case class CrossJoin(outer: Operator, inner: Operator) extends Operator
-  case class UnionJoin(outer: Operator, inner: Operator) extends Operator
+  case class Join(outer: Operator, inner: Operator, joinType: JoinType, spec: JoinSpec) extends Operator {
+    override def toString = {
+      val (inside1, end) = spec match {
+        case On(condition) => ("", s" ON $condition")
+        case Using(columns) => ("", s" USING (${columns.mkString(", ")})")
+        case Natural => ("NATURAL ", "")
+      }
+      val inside2 = joinType match {
+        case Inner => ""
+        case LeftOuter => "LEFT "
+        case RightOuter => "RIGHT "
+        case FullOuter => "FULL "
+        case LeftSemi => "LEFT SEMI "
+      }
+      s"${p(outer)} $inside1${inside2}JOIN ${p(inner)}$end"
+    }
+  }
+  case class CrossJoin(outer: Operator, inner: Operator) extends Operator {
+    override def toString = s"${p(outer)} CROSS JOIN ${p(inner)}"
+  }
+  case class UnionJoin(outer: Operator, inner: Operator) extends Operator {
+    override def toString = s"${p(outer)} UNION JOIN ${p(inner)}"
+  }
 
   case class SelectStmt(operator: Operator) extends Statement
 
@@ -167,32 +237,36 @@ object SqlAST {
 
   sealed trait Expression extends Node[Expression]
 
-  case class SelectExpr(op: Operator) extends Expression
+  case class SelectExpr(op: Operator) extends Expression {
+    override def toString = op.toString
+  }
 
-  sealed trait BinOp
+  sealed abstract class BinOp(val name: String)
 
-  sealed trait ArithOp extends BinOp
-  case object Plus extends ArithOp
-  case object Minus extends ArithOp
-  case object Times extends ArithOp
-  case object Divide extends ArithOp
-  case object Modulo extends ArithOp
+  sealed abstract class ArithOp(name: String) extends BinOp(name)
+  case object Plus extends ArithOp("+")
+  case object Minus extends ArithOp("-")
+  case object Times extends ArithOp("*")
+  case object Divide extends ArithOp("/")
+  case object Modulo extends ArithOp("%")
 
-  sealed trait LogicOp extends BinOp
-  case object And extends LogicOp
-  case object Or extends LogicOp
+  sealed abstract class LogicOp(name: String) extends BinOp(name)
+  case object And extends LogicOp("AND")
+  case object Or extends LogicOp("OR")
 
-  sealed trait ComparisonOp extends BinOp
-  case object Eq extends ComparisonOp
-  case object Greater extends ComparisonOp
-  case object GreaterEq extends ComparisonOp
-  case object Less extends ComparisonOp
-  case object LessEq extends ComparisonOp
-  case object Is extends ComparisonOp
+  sealed abstract class ComparisonOp(name: String) extends BinOp(name)
+  case object Eq extends ComparisonOp("=")
+  case object Greater extends ComparisonOp(">")
+  case object GreaterEq extends ComparisonOp(">=")
+  case object Less extends ComparisonOp("<")
+  case object LessEq extends ComparisonOp("<=")
+  case object Is extends ComparisonOp("IS")
 
-  case object Concat extends BinOp
+  case object Concat extends BinOp("||")
 
-  case class BinOpExpr(op: BinOp, left: Expression, right: Expression) extends Expression
+  case class BinOpExpr(op: BinOp, left: Expression, right: Expression) extends Expression {
+    override def toString = s"${p(left)} ${op.name} ${p(right)}"
+  }
 
   sealed trait AggregateOp
   case object Count extends AggregateOp
@@ -206,38 +280,85 @@ object SqlAST {
 
   case class AggregateExpr(op: AggregateOp, distinct: Boolean, value: Expression) extends Expression {
     def isCountAll = this == CountAllExpr
+
+    override def toString = s"${op.toString.toUpperCase}(${if (distinct) "DISTINCT " else ""}$value)"
+    override def noParentheses = true
   }
   val CountAllExpr = AggregateExpr(Count, false, Literal(1, IntType))
 
-  case class LikeExpr(left: Expression, right: Expression, escape: Option[Expression]) extends Expression
+  case class LikeExpr(left: Expression, right: Expression, escape: Option[Expression]) extends Expression {
+    override def toString = s"$left LIKE $right" + escape.fold("")(e => s" ESCAPE $e")
+  }
 
-  case class InListExpr(expr: Expression, list: ExprList) extends Expression
+  case class InListExpr(expr: Expression, list: ExprList) extends Expression {
+    override def toString = s"$expr IN (${list.mkString(", ")})"
+  }
 
-  case class InExpr(left: Expression, subquery: Operator) extends Expression
+  case class InExpr(left: Expression, subquery: Operator) extends Expression {
+    override def toString = s"$left IN $subquery"
+  }
 
-  case class ExistsExpr(op: Operator) extends Expression
+  case class ExistsExpr(op: Operator) extends Expression {
+    override def toString = s"EXISTS ${p(op)}"
+  }
 
-  case class NegExpr(opd: Expression) extends Expression
+  case class NegExpr(opd: Expression) extends Expression {
+    override def toString = s"-${p(opd)}"
+  }
 
-  case class NotExpr(opd: Expression) extends Expression
+  case class NotExpr(opd: Expression) extends Expression {
+    override def toString = s"NOT ${p(opd)}"
+  }
 
-  case class SubstrExpr(str: Expression, from: Expression, len: Expression) extends Expression
+  case class SubstrExpr(str: Expression, from: Expression, len: Expression) extends Expression {
+    override def toString = s"SUBSTR($str, $from, $len)"
+    override def noParentheses = true
+  }
 
-  case class IsNullExpr(opd: Expression) extends Expression
+  case class IsNullExpr(opd: Expression) extends Expression {
+    override def toString = s"${p(opd)} IS NULL"
+    override def noParentheses = true
+  }
 
-  case class FuncExpr(name: String, params: ExprList) extends Expression
+  case class FuncExpr(name: String, params: ExprList) extends Expression {
+    override def toString = s"$name(${params.mkString(", ")}"
+    override def noParentheses = true
+  }
 
-  case class CastExpr(expr: Expression, to: ColumnType) extends Expression
+  case class CastExpr(expr: Expression, to: ColumnType) extends Expression {
+    override def toString = s"${p(expr)} AS $to"
+  }
 
   case class Literal(value: Any, tp: ColumnType) extends Expression with Positional {
     // set in SqlParser.select
     var index: Option[Int] = None
+    override def toString = {
+      tp match {
+        case _: StringType => s"'$value'"
+        case DateType => s"DATE'$value'"
+        case TimeType => s"TIME'$value'"
+        case TimestampType => s"TS'$value'"
+        case _ => value.toString
+      }
+    }
+    override def noParentheses = true
   }
 
-  case object NullLiteral extends Expression
+  case object NullLiteral extends Expression {
+    override def toString = "NULL"
+    override def noParentheses = true
+  }
 
   // FIXME CaseWhenExpr(operand: Option[Expression], cases: List[(Expression, Expression)], default: Option[Expression])
-  case class CaseWhenExpr(list: ExprList) extends Expression
+  case class CaseWhenExpr(list: ExprList) extends Expression {
+    override def toString = {
+      "CASE" + list.grouped(2).map {
+        // no other list lengths are possible
+        case List(cond, res) => s" WHEN $cond THEN $res"
+        case List(last) => s" ELSE $last"
+      }.mkString
+    }
+  }
 
   // We could have Expression[C] and
   // type UnresolvedExpression = Expression[UnresolvedAttribute]
@@ -245,23 +366,23 @@ object SqlAST {
   // to distinguish resolved and unresolved expressions and operators statically
   // TODO: determine whether this is a good idea
   case class UnresolvedAttribute(table: Option[String], name: String) extends Expression {
-    def asString = table match {
-      case Some(table) => table + "." + name
-      case None => name
-    }
+    override def toString = "[Unresolved]" + table.fold("")(_ + ".") + name
+    override def noParentheses = true
   }
 
   sealed trait ResolvedAttribute extends Expression {
     def name: String
     def sqlType: ColumnType
+    override def noParentheses = true
   }
   case class ResolvedTableAttribute(table: Table, index: Int) extends ResolvedAttribute {
     val column = table.columns(index)
     val name = column.name
     val sqlType = column.ctype
-    override def toString = s"ResolvedTableAttribute(${table.name}.$name: $sqlType)"
+    override def toString = s"[Resolved]${table.name}.$name"
   }
   case class ResolvedProjectedAttribute(parent: Expression, name: String, sqlType: ColumnType) extends ResolvedAttribute {
+    override def toString = s"[Resolved]($parent AS $name)"
     // assert(parent.isResolved) uncomment when/if Expression.isResolved is added
   }
 

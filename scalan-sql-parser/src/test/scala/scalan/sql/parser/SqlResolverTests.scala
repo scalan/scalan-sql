@@ -18,8 +18,10 @@ class SqlResolverTests extends BaseNestedTests {
 
           val resolved = resolver.resolveOperator(unresolved)
 
-          // cheating test
-          assert(!resolved.toString.contains("Unresolved"))
+          assert(!resolved.toString.contains("[Unresolved]"))
+
+          // check resolution correctness manually for now
+          println(s"Original SQL:\n${query.sql}\n\nUnresolved:\n$unresolved\n\nResolved:\n$resolved\n\n")
         }
     }
   }

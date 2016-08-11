@@ -15,7 +15,8 @@ class SqlResolver(val schema: Schema) {
             case Some(s: Scope) =>
               s.lookup(col)
             case _ =>
-              throw SqlException( s"""Failed to lookup column ${col.asString}""")
+              throw SqlException(
+                s"Failed to lookup column $col")
           }
         }
       }
@@ -213,7 +214,7 @@ class SqlResolver(val schema: Schema) {
           val b1 = b.copy(path = "tail" :: b.path)
           Some(b1)
         case (Some(_), Some(_)) =>
-          throw SqlException(s"""Ambiguous reference to ${ref.asString}""")
+          throw SqlException(s"Ambiguous reference to $ref")
         case _ => None
       }
     }
