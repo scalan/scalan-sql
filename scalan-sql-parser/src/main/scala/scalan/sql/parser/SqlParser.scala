@@ -610,7 +610,7 @@ class SqlParser {
         | cast
         | "(" ~> expression <~ ")"
         | function
-        | (ident <~ ".").? ~ ident ^^ { case tableOpt ~ name => ColumnRef(tableOpt, name) }
+        | (ident <~ ".").? ~ ident ^^ { case tableOpt ~ name => UnresolvedAttribute(tableOpt, name) }
         | signedExpression
         | "(" ~> selectStmt <~ ")" ^^ { case SelectStmt(op) => SelectExpr(op) }
         )

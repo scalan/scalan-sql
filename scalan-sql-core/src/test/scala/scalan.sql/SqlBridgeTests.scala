@@ -3,15 +3,14 @@ package scalan.sql
 import scalan.BaseNestedTests
 import scalan.compilation.GraphVizConfig
 import scalan.sql.compilation.{RelationToIterBridge, ScalanSqlBridge}
-import scalan.sql.parser.SqlResolver
-import scalan.sql.parser.SqlAST.BasicStringType
+import scalan.sql.parser.{SqlResolver, SqliteResolver}
 
 abstract class AbstractSqlBridgeTests extends BaseNestedTests {
   def createExpAndGraph(query: TestQuery): Unit
 
   def tpchBridge(scalan: ScalanSqlExp): ScalanSqlBridge[scalan.type] =
     new ScalanSqlBridge[scalan.type](TPCH.DDL, scalan) {
-      resolver.registerFunctionType("strftime", BasicStringType)
+      override lazy val resolver = new SqliteResolver(schema)
     }
 
   describe("TPCH") {

@@ -113,7 +113,9 @@ object SqlAST {
   case object FullOuter extends JoinType
   case object LeftSemi extends JoinType
 
-  abstract sealed class Operator
+  abstract sealed trait Node[T <: Node[T]]
+
+  abstract sealed class Operator extends Node[Operator]
 
   case class Scan(tableName: String) extends Operator
 
@@ -163,7 +165,7 @@ object SqlAST {
 
   case class CreateIndexStmt(index: Index) extends Statement
 
-  sealed trait Expression
+  sealed trait Expression extends Node[Expression]
 
   case class SelectExpr(op: Operator) extends Expression
 
@@ -209,7 +211,7 @@ object SqlAST {
 
   case class LikeExpr(left: Expression, right: Expression, escape: Option[Expression]) extends Expression
 
-  case class InListExpr(left: Expression, right: ExprList) extends Expression
+  case class InListExpr(expr: Expression, list: ExprList) extends Expression
 
   case class InExpr(left: Expression, subquery: Operator) extends Expression
 
@@ -237,11 +239,30 @@ object SqlAST {
   // FIXME CaseWhenExpr(operand: Option[Expression], cases: List[(Expression, Expression)], default: Option[Expression])
   case class CaseWhenExpr(list: ExprList) extends Expression
 
-  case class ColumnRef(table: Option[String], name: String) extends Expression {
-    def asString = (table match {
-      case Some(table) => table + "."
-      case None => ""
-    }) + name
+  // We could have Expression[C] and
+  // type UnresolvedExpression = Expression[UnresolvedAttribute]
+  // type ResolvedExpression = Expression[ResolvedAttribute]
+  // to distinguish resolved and unresolved expressions and operators statically
+  // TODO: determine whether this is a good idea
+  case class UnresolvedAttribute(table: Option[String], name: String) extends Expression {
+    def asString = table match {
+      case Some(table) => table + "." + name
+      case None => name
+    }
+  }
+
+  sealed trait ResolvedAttribute extends Expression {
+    def name: String
+    def sqlType: ColumnType
+  }
+  case class ResolvedTableAttribute(table: Table, index: Int) extends ResolvedAttribute {
+    val column = table.columns(index)
+    val name = column.name
+    val sqlType = column.ctype
+    override def toString = s"ResolvedTableAttribute(${table.name}.$name: $sqlType)"
+  }
+  case class ResolvedProjectedAttribute(parent: Expression, name: String, sqlType: ColumnType) extends ResolvedAttribute {
+    // assert(parent.isResolved) uncomment when/if Expression.isResolved is added
   }
 
   def Script(stmts: Statement*): Script = stmts.toList

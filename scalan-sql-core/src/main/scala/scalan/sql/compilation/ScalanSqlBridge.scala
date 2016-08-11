@@ -108,10 +108,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           case Natural =>
             val allOuterColumnNames = outerRowElem.asInstanceOf[StructElem[_]].fieldNames
             val allInnerColumnNames = innerRowElem.asInstanceOf[StructElem[_]].fieldNames
-            val commonColumns = allOuterColumnNames.intersect(allInnerColumnNames).map(ColumnRef(None, _))
+            val commonColumns = allOuterColumnNames.intersect(allInnerColumnNames).map(UnresolvedAttribute(None, _))
             (commonColumns, commonColumns)
           case Using(columnNames) =>
-            val columns = columnNames.map(ColumnRef(None, _))
+            val columns = columnNames.map(UnresolvedAttribute(None, _))
             (columns, columns)
           case On(condition) =>
             withContext(outer) {
@@ -119,10 +119,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               withContext(inner) {
                 val InnerScopeName = currentScopeName
 
-                def columns(cond: Expression): List[(ColumnRef, ColumnRef)] = cond match {
+                def columns(cond: Expression): List[(UnresolvedAttribute, UnresolvedAttribute)] = cond match {
                   case BinOpExpr(SqlAST.And, l, r) =>
                     columns(l) ++ columns(r)
-                  case BinOpExpr(Eq, l: ColumnRef, r: ColumnRef) =>
+                  case BinOpExpr(Eq, l: UnresolvedAttribute, r: UnresolvedAttribute) =>
                     val bindingL = resolver.lookup(l)
                     val bindingR = resolver.lookup(r)
                     bindingL.scope match {
@@ -148,9 +148,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             }
         }
 
-        def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ColumnRef]) = inferredFun(elem) { x =>
+        def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[UnresolvedAttribute]) = inferredFun(elem) { x =>
           withContext(op) {
-            def column(column: ColumnRef) =
+            def column(column: UnresolvedAttribute) =
               ExprInputs(currentScopeName -> x).resolveColumn(column)
 
             columns match {
@@ -322,7 +322,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         Nil
       case CastExpr(exp, typ) =>
         extractAggregateExprs(exp)
-      case ref: ColumnRef =>
+      case ref: UnresolvedAttribute =>
         Nil
       case SubstrExpr(str, from, len) =>
         extractAggregateExprs(str) ++ extractAggregateExprs(from) ++ extractAggregateExprs(len)
@@ -553,7 +553,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def name(column: ProjectionColumn, unnamedCounter: IntRef) =
     column.alias.getOrElse {
       column.expr match {
-        case c: ColumnRef =>
+        case c: UnresolvedAttribute =>
           c.name
         case _ =>
           unnamedCounter.elem += 1
@@ -688,7 +688,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
 
     // TODO inline
-    def resolveColumn(c: ColumnRef) = {
+    def resolveColumn(c: UnresolvedAttribute) = {
       val binding = resolver.lookup(c)
       scopes.get(binding.scope) match {
         case None =>
@@ -771,7 +771,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
     case agg: AggregateExpr =>
       inputs.resolveAgg(agg)
-    case c: ColumnRef =>
+    case c: UnresolvedAttribute =>
       inputs.resolveColumn(c)
     case BinOpExpr(op, l, r) =>
       val lExp = generateExpr(l, inputs)
