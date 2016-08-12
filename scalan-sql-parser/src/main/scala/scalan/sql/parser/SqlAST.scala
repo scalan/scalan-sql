@@ -1,6 +1,5 @@
 package scalan.sql.parser
 
-import scala.reflect.{ClassTag, classTag}
 import scala.util.parsing.input.Positional
 
 object SqlAST {
@@ -43,21 +42,18 @@ object SqlAST {
 
   trait ColumnType {
     def sqlName: String
-    def scalaName: String
     override def toString = sqlName
   }
 
-  abstract class SimpleColumnType[A](val sqlName: String)(implicit tag: ClassTag[A]) extends ColumnType {
-    val scalaName = tag.toString
-  }
+  abstract class SimpleColumnType(val sqlName: String) extends ColumnType
 
-  case object IntType extends SimpleColumnType[Int]("INTEGER")
-  case object BigIntType extends SimpleColumnType[Long]("BIGINT")
-  case object SmallIntType extends SimpleColumnType[Short]("SMALLINT")
-  case object TinyIntType extends SimpleColumnType[Short]("TINYINT")
+  case object IntType extends SimpleColumnType("INTEGER")
+  case object BigIntType extends SimpleColumnType("BIGINT")
+  case object SmallIntType extends SimpleColumnType("SMALLINT")
+  case object TinyIntType extends SimpleColumnType("TINYINT")
 
-  case object FloatType extends SimpleColumnType[Float]("FLOAT")
-  case object DoubleType extends SimpleColumnType[Double]("DOUBLE")
+  case object FloatType extends SimpleColumnType("FLOAT")
+  case object DoubleType extends SimpleColumnType("DOUBLE")
   case class DecimalType(totalDigits: Option[Int], fractionalDigits: Option[Int]) extends ColumnType {
     val sqlName = "DECIMAL" + ((totalDigits, fractionalDigits) match {
       case (None, None) => ""
@@ -65,25 +61,23 @@ object SqlAST {
       case (None, Some(f)) => "s(, $f)" // not actually legal
       case (Some(t), Some(f)) => s"($t, $f)"
     })
-    val scalaName = classTag[BigDecimal].toString
   }
 
-  case object BoolType extends SimpleColumnType[Boolean]("BOOL")
+  case object BoolType extends SimpleColumnType("BOOL")
 
-  case class StringType(fixed: Boolean, length: Option[Int]) extends SimpleColumnType[String](
-    (if (fixed) "CHAR" else "VARCHAR") + length.fold("")(l => s"($l)")
-  )
+  case class StringType(fixed: Boolean, length: Option[Int]) extends ColumnType {
+    val sqlName = (if (fixed) "CHAR" else "VARCHAR") + length.fold("")(l => s"($l)")
+  }
   val BasicStringType = StringType(false, None)
 
-  case object BlobType extends SimpleColumnType[Array[Byte]]("BLOB")
+  case object BlobType extends SimpleColumnType("BLOB")
 
-  case object DateType extends SimpleColumnType[java.sql.Date]("DATE")
-  case object TimeType extends SimpleColumnType[java.sql.Time]("TIME")
-  case object TimestampType extends SimpleColumnType[java.sql.Timestamp]("TIMESTAMP")
+  case object DateType extends SimpleColumnType("DATE")
+  case object TimeType extends SimpleColumnType("TIME")
+  case object TimestampType extends SimpleColumnType("TIMESTAMP")
 
   case class EnumType(values: List[String]) extends ColumnType {
     val sqlName = s"ENUM(${values.mkString(", ")})"
-    val scalaName = classTag[String].toString
   }
 
   sealed trait TableConstraint
