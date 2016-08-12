@@ -375,7 +375,7 @@ object SqlAST {
     val sqlType = column.ctype
     override def toString = s"[Resolved]${table.name}.$name"
   }
-  case class ResolvedProjectedAttribute(parent: Expression, name: String, sqlType: ColumnType) extends ResolvedAttribute {
+  case class ResolvedProjectedAttribute(parent: Expression, name: String, index: Int, sqlType: ColumnType) extends ResolvedAttribute {
     override def toString = s"[Resolved]($parent AS $name)"
     // assert(parent.isResolved) uncomment when/if Expression.isResolved is added
   }

@@ -7,26 +7,16 @@ class SqlResolver(val schema: Schema) {
   def indices(tableName: String) = schema.indices(tableName)
 
   case class Scope(var ctx: Context, outer: Option[Scope], nesting: Int, name: String) {
-    def lookup(col: UnresolvedAttribute): Binding = {
-      ctx.resolve(col) match {
-        case Some(b) => b
-        case None => {
-          outer match {
-            case Some(s: Scope) =>
-              s.lookup(col)
-            case _ =>
-              throw SqlException(
-                s"Failed to lookup column $col")
-          }
-        }
-      }
-    }
+    def resolve(attribute: UnresolvedAttribute): Option[ResolvedAttribute] =
+      ctx.resolve(attribute).orElse(outer.flatMap(_.resolve(attribute)))
+    def lookup(attribute: ResolvedAttribute): Option[Binding] =
+      ctx.lookup(attribute).orElse(outer.flatMap(_.lookup(attribute)))
   }
 
-  var currScope: Scope = Scope(new GlobalContext, None, 0, "scalan")
+  var currScope: Scope = Scope(GlobalContext, None, 0, "scalan")
 
   def withContext[A](op: Operator)(block: => A) = {
-    currScope = Scope(currScope.ctx, Some(currScope), currScope.nesting + 1, if (currScope.nesting == 0) "r" else "r" + currScope.nesting.toString)
+    currScope = Scope(currScope.ctx, Some(currScope), currScope.nesting + 1, s"r${currScope.nesting}")
     currScope.ctx = buildContext(op)
     val result = block
     currScope = currScope.outer.get
@@ -135,12 +125,19 @@ class SqlResolver(val schema: Schema) {
       CaseWhenExpr(list.map(resolveExpr))
     case Literal(_, _) | NullLiteral | _: ResolvedAttribute =>
       expr
-    case col @ UnresolvedAttribute(table, name) =>
-      lookup(col).attribute
+    case attribute: UnresolvedAttribute =>
+      resolveAttribute(attribute)
   }
 
-  // should only be called from resolveExpr?
-  def lookup(col: UnresolvedAttribute): Binding = currScope.lookup(col)
+  def resolveAttribute(attribute: UnresolvedAttribute) =
+    currScope.resolve(attribute).getOrElse {
+      throw new SqlException(s"Failed to resolve $attribute in scope $currScope")
+    }
+
+  def lookup(attribute: ResolvedAttribute): Binding =
+    currScope.lookup(attribute).getOrElse {
+      throw new SqlException(s"Failed to lookup $attribute in scope $currScope")
+    }
 
   def tablesInNestedSelects(e: Expression): Set[Table] = {
     e match {
@@ -181,32 +178,56 @@ class SqlResolver(val schema: Schema) {
   case class Binding(scope: String, path: List[String], attribute: ResolvedAttribute)
 
   abstract class Context {
-    def resolve(ref: UnresolvedAttribute): Option[Binding]
+    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute]
+    def lookup(resolved: ResolvedAttribute): Option[Binding]
 
     val scope = currScope
   }
 
-  class GlobalContext() extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[Binding] = None
+  case object GlobalContext extends Context {
+    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = None
+    def lookup(resolved: ResolvedAttribute): Option[Binding] = None
   }
 
   case class TableContext(table: Table) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[Binding] = {
-      if (ref.table.isEmpty || ref.table == Some(table.name)) {
-        val i = table.columns.indexWhere(c => c.name == ref.name)
-        if (i >= 0) {
-          val path = List(ref.name)
-          Some(Binding(scope.name, path, ResolvedTableAttribute(table, i)))
-        } else None
-      } else None
+    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
+      val qualifier = ref.table
+      if (qualifier.isEmpty || qualifier == Some(table.name)) {
+        table.columns.indexWhere(c => c.name == ref.name) match {
+          case -1 => None
+          case i =>
+            Some(ResolvedTableAttribute(table, i))
+        }
+      } else
+        None
+    }
+
+    def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
+      case ResolvedTableAttribute(`table`, index) =>
+        Some(Binding(scope.name, List(resolved.name), resolved))
+      case ResolvedProjectedAttribute(parent: ResolvedAttribute, _, _, _) =>
+        lookup(parent)
+      case _ => None
     }
 
     override def toString: String = s"TableContext(${table.name})"
   }
 
   case class JoinContext(outer: Context, inner: Context) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[Binding] = {
+    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
       (outer.resolve(ref), inner.resolve(ref)) match {
+        case (Some(b), None) =>
+          Some(b)
+        case (None, Some(b)) =>
+          Some(b)
+        case (Some(_), Some(_)) =>
+          throw SqlException(s"Ambiguous reference to $ref")
+        case _ => None
+      }
+    }
+
+    def lookup(ref: ResolvedAttribute): Option[Binding] = {
+      (outer.lookup(ref), inner.lookup(ref)) match {
         case (Some(b), None) =>
           val b1 = b.copy(path = "head" :: b.path)
           Some(b1)
@@ -221,7 +242,7 @@ class SqlResolver(val schema: Schema) {
   }
 
   case class AliasContext(parent: Context, alias: String) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[Binding] =
+    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] =
       ref.table match {
         case None =>
           parent.resolve(ref)
@@ -230,24 +251,35 @@ class SqlResolver(val schema: Schema) {
         case _ =>
           None
       }
+
+    def lookup(resolved: ResolvedAttribute): Option[Binding] =
+      parent.lookup(resolved)
   }
 
   case class ProjectContext(parent: Context, columns: List[ProjectionColumn]) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[Binding] = {
-      val i = columns.indexWhere {
+    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
+      columns.indexWhere {
         case ProjectionColumn(c, alias) => matchExpr(c, alias, ref)
+      } match {
+        case -1 =>
+          None
+        case i =>
+          val saveScope = currScope
+          currScope = scope.copy(ctx = parent)
+          val column = columns(i)
+          val parentExpr = column.expr
+          val cType = getExprType(parentExpr)
+          val attr = ResolvedProjectedAttribute(parentExpr, ref.name, i, cType)
+          currScope = saveScope
+          Some(attr)
       }
-      if (i >= 0) {
-        val saveScope = currScope
-        currScope = scope.copy(ctx = parent)
-        val column = columns(i)
-        val parentExpr = column.expr
-        val cType = getExprType(parentExpr)
-        val attr = ResolvedProjectedAttribute(parentExpr, ref.name, cType)
-        currScope = saveScope
-        Some(Binding(scope.name, indexToPath(i, columns.length), attr))
-      }
-      else None
+    }
+
+    def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
+      case ResolvedProjectedAttribute(_, name, i, _) =>
+        Some(Binding(scope.name, indexToPath(i, columns.length), resolved))
+      case _ =>
+        None
     }
   }
 
@@ -396,6 +428,10 @@ class SqlResolver(val schema: Schema) {
 
   def using(op: Operator, predicate: Expression): Boolean = {
     predicate match {
+      case attribute: ResolvedAttribute =>
+        buildContext(op).lookup(attribute).isDefined
+      case ref: UnresolvedAttribute =>
+        throw new IllegalArgumentException("using called on an unresolved expression")
       case BinOpExpr(_, l, r) => using(op, l) || using(op, r)
       case ExistsExpr(q) => depends(op, q)
       case LikeExpr(l, r, escape) =>
@@ -404,7 +440,6 @@ class SqlResolver(val schema: Schema) {
       case NotExpr(opd) => using(op, opd)
       case Literal(v, t) => false
       case CastExpr(exp, typ) => using(op, exp)
-      case ref: UnresolvedAttribute => buildContext(op).resolve(ref).isDefined
       case SelectExpr(s) => depends(op, s)
       case AggregateExpr(_, _, opd) => using(op, opd)
       case SubstrExpr(str, from, len) => using(op, str) || using(op, from) || using(op, len)
