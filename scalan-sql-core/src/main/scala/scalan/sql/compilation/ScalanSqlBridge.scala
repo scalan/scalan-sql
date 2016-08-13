@@ -85,8 +85,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   object ScanOrScanAlias {
     def unapply(op: Operator) = op match {
-      case Scan(tableName) => Some(tableName -> resolver.table(tableName))
-      case TableAlias(Scan(tableName), name) => Some(s"$tableName as $name" -> resolver.table(tableName))
+      case Scan(tableName, _) => Some(tableName -> resolver.table(tableName))
+      case TableAlias(Scan(tableName, _), name) => Some(s"$tableName as $name" -> resolver.table(tableName))
       case _ => None
     }
   }
