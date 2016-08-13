@@ -6,7 +6,7 @@ import scalan.sql.compilation.{RelationToIterBridge, ScalanSqlBridge}
 import scalan.sql.parser.{SqlResolver, SqliteResolver}
 
 abstract class AbstractSqlBridgeTests extends BaseNestedTests {
-  def createExpAndGraph(query: TestQuery): Unit
+  def testQuery(query: TestQuery): Unit
 
   def tpchBridge(scalan: ScalanSqlExp): ScalanSqlBridge[scalan.type] =
     new ScalanSqlBridge[scalan.type](TPCH.DDL, scalan) {
@@ -20,17 +20,103 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
           name match {
               // not supported yet
             case "Q13" | "Q16" =>
-              pendingUntilFixed { createExpAndGraph(query) }
+              pendingUntilFixed { testQuery(query) }
             case _ =>
-              createExpAndGraph(query)
+              testQuery(query)
           }
         }
     }
   }
+
+  it("project and filter") {
+    testQuery(TestQuery(
+      """select l_returnflag, l_linestatus
+        |from lineitem
+        |where l_quantity > 5
+      """.stripMargin,
+      Map("lineitem" -> Set("l_quantity", "l_returnflag", "l_linestatus")))
+    )
+  }
+
+  it("simple aggregate") {
+    testQuery(TestQuery(
+      """select
+        |  sum(l_quantity) as sum_qty,
+        |  avg(l_extendedprice) as avg_price
+        |from lineitem
+        |where
+        |  l_quantity > 5""".stripMargin,
+      Map("lineitem" -> Set("l_quantity", "l_extendedprice")))
+    )
+  }
+
+  it("group by") {
+    testQuery(TestQuery(
+      """select
+        |    l_returnflag,
+        |    sum(l_quantity) as sum_qty
+        |from
+        |    lineitem
+        |group by
+        |    l_returnflag""".stripMargin))
+  }
+
+  // FIXME need to rework SqlResolver to handle these cases
+  it("order by and filter on non-selected columns") {
+    pendingUntilFixed {
+      testQuery(TestQuery(
+        """select n_name from nation
+          |where n_comment <> ''
+          |order by n_nationkey""".stripMargin))
+    }
+  }
+
+  it("filter on projected columns") {
+    pendingUntilFixed {
+      testQuery(TestQuery(
+        """select n_regionkey + n_nationkey as key_sum from nation
+          |where key_sum > 10
+          |order by key_sum""".stripMargin))
+    }
+  }
+
+  it("mapReduce with empty value") {
+    testQuery(TestQuery(
+      """select
+        |    l_orderkey
+        |from
+        |    orders join lineitem on l_orderkey = o_orderkey
+        |where
+        |    o_orderdate < '1995-03-04'
+        |group by
+        |    l_orderkey""".stripMargin,
+      Map(
+        "orders" -> Set("o_orderkey", "o_orderdate"),
+        "lineitem" -> Set("l_orderkey")))
+    )
+  }
+
+  it("correlated subquery") {
+    testQuery(TestQuery(
+      """select
+        |    p_size
+        |from
+        |    part
+        |where
+        |    p_size = (
+        |        select
+        |            max(l_linenumber)
+        |        from
+        |            lineitem
+        |        where
+        |            l_partkey = p_partkey)""".stripMargin,
+      Map())
+    )
+  }
 }
 
 class RelationSqlBridgeTests extends AbstractSqlBridgeTests {
-  def createExpAndGraph(query: TestQuery) = {
+  def testQuery(query: TestQuery) = {
     val scalan = new ScalanSqlExp {}
     val bridge = tpchBridge(scalan)
 
@@ -40,7 +126,7 @@ class RelationSqlBridgeTests extends AbstractSqlBridgeTests {
 }
 
 class IterSqlBridgeTests extends AbstractSqlBridgeTests {
-  def createExpAndGraph(query: TestQuery) = {
+  def testQuery(query: TestQuery) = {
     val scalan = new ScalanSqlExp {}
     import scalan._
     val bridge = tpchBridge(scalan)
