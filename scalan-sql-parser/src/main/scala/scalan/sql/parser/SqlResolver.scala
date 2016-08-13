@@ -23,7 +23,7 @@ class SqlResolver(val schema: Schema) {
     }
   }
 
-  var currScope: Scope = Scope(new GlobalContext, None, 0, "scalan")
+  var currScope: Scope = Scope(GlobalContext, None, 0, "scalan")
 
   def withContext[A](op: Operator)(block: => A) = {
     currScope = Scope(currScope.ctx, Some(currScope), currScope.nesting + 1, if (currScope.nesting == 0) "r" else "r" + currScope.nesting.toString)
@@ -180,13 +180,13 @@ class SqlResolver(val schema: Schema) {
 
   case class Binding(scope: String, path: List[String], attribute: ResolvedAttribute)
 
-  abstract class Context {
+  sealed abstract class Context {
     def resolve(ref: UnresolvedAttribute): Option[Binding]
 
     val scope = currScope
   }
 
-  class GlobalContext() extends Context {
+  case object GlobalContext extends Context {
     def resolve(ref: UnresolvedAttribute): Option[Binding] = None
   }
 
