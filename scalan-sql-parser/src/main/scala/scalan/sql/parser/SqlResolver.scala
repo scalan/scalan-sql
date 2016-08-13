@@ -304,7 +304,9 @@ class SqlResolver(val schema: Schema) {
       case SelectExpr(s) => DoubleType
       case FuncExpr(name, args) => funcType(name, args)
       case attribute: ResolvedAttribute => attribute.sqlType
-      case c: UnresolvedAttribute => throw new IllegalArgumentException(s"getExprType called for an expression with unresolved column $c")
+      case c: UnresolvedAttribute =>
+        // TODO throw an exception after SqlBridge works with resolved expressions
+        lookup(c).attribute.sqlType
       case _ => throw new NotImplementedError(s"getExprType($expr)")
     }
   }
