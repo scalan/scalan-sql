@@ -2,6 +2,14 @@ package scalan.sql.parser
 
 import scala.util.parsing.input.Positional
 
+object ID {
+  private var i: Int = 0
+  def next() = {
+    i += 1
+    i
+  }
+}
+
 object SqlAST {
 
   abstract sealed class Statement
@@ -122,8 +130,8 @@ object SqlAST {
 
   abstract sealed class Operator extends Node[Operator]
 
-  case class Scan(tableName: String) extends Operator {
-    override def toString = tableName
+  case class Scan(tableName: String, id: Int = ID.next()) extends Operator {
+    override def toString = s"$tableName{$id}"
     override def noParentheses = true
   }
 
@@ -369,11 +377,11 @@ object SqlAST {
     def sqlType: ColumnType
     override def noParentheses = true
   }
-  case class ResolvedTableAttribute(table: Table, index: Int) extends ResolvedAttribute {
+  case class ResolvedTableAttribute(table: Table, tableId: Int, index: Int) extends ResolvedAttribute {
     val column = table.columns(index)
     val name = column.name
     val sqlType = column.ctype
-    override def toString = s"[Resolved]${table.name}.$name"
+    override def toString = s"[Resolved]${table.name}{$tableId}.$name"
   }
   case class ResolvedProjectedAttribute(parent: Expression, name: String, sqlType: ColumnType) extends ResolvedAttribute {
     override def toString = s"[Resolved]($parent AS $name)"

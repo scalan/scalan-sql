@@ -34,7 +34,7 @@ class SqlResolver(val schema: Schema) {
   }
 
   def resolveOperator(op: Operator): Operator = op match {
-    case Scan(tableName) =>
+    case Scan(tableName, _) =>
       op
     case Distinct(table) =>
       Distinct(resolveOperator(op))
@@ -159,7 +159,7 @@ class SqlResolver(val schema: Schema) {
   def tables(op: Operator): Set[Table] = {
     op match {
       case Join(outer, inner, _, _) => tables(outer) ++ tables(inner)
-      case Scan(t) => Set(table(t))
+      case Scan(t, _) => Set(table(t))
       case OrderBy(p, by) => tables(p)
       case GroupBy(p, by) => tables(p)
       case Filter(p, predicate) => tables(p) ++ tablesInNestedSelects(predicate)
@@ -190,13 +190,13 @@ class SqlResolver(val schema: Schema) {
     def resolve(ref: UnresolvedAttribute): Option[Binding] = None
   }
 
-  case class TableContext(table: Table) extends Context {
+  case class TableContext(table: Table, id: Int) extends Context {
     def resolve(ref: UnresolvedAttribute): Option[Binding] = {
       if (ref.table.isEmpty || ref.table == Some(table.name)) {
         val i = table.columns.indexWhere(c => c.name == ref.name)
         if (i >= 0) {
           val path = List(ref.name)
-          Some(Binding(scope.name, path, ResolvedTableAttribute(table, i)))
+          Some(Binding(scope.name, path, ResolvedTableAttribute(table, id, i)))
         } else None
       } else None
     }
@@ -254,7 +254,7 @@ class SqlResolver(val schema: Schema) {
   def buildContext(op: Operator): Context = {
     op match {
       case Join(outer, inner, _, _) => JoinContext(buildContext(outer), buildContext(inner))
-      case Scan(t) => TableContext(table(t))
+      case Scan(t, id) => TableContext(table(t), id)
       case OrderBy(p, by) => buildContext(p)
       case GroupBy(p, by) => buildContext(p)
       case Filter(p, predicate) => buildContext(p)
@@ -384,7 +384,7 @@ class SqlResolver(val schema: Schema) {
 
   def depends(on: Operator, subquery: Operator): Boolean = subquery match {
     case Join(outer, inner, _, _) => depends(on, outer) || depends(on, inner)
-    case Scan(t) => false
+    case Scan(t, _) => false
     case OrderBy(p, by) => depends(on, p) || using(on, by.map(_.expr))
     case GroupBy(p, by) => depends(on, p) || using(on, by)
     case Filter(p, predicate) => depends(on, p) || using(on, predicate)
