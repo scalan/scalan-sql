@@ -56,7 +56,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     assert(reuseDetector, "Instance of ScalanSqlBridge is being reused, please create a new one (based on a separate Scalan cake) for each query instead")
     reuseDetector = false
     val parsedSql = parser.parseSelect(query).operator
-    val tables = allTables(parsedSql).toSeq.distinct
+    val resolved = resolver.resolveOperator(parsedSql)
+    val tables = allTables(resolved).toSeq.distinct
 
     val inputRowElems = tables.map {
       case (name, table) =>
@@ -74,7 +75,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
       val scopes = tableScopes :+ (currentScopeName -> x)
       val inputs = ExprInputs(scopes: _*)
-      generateOperator(parsedSql, inputs)
+      generateOperator(resolved, inputs)
     }
     // could return a struct instead of adding metadate, function is easier to pass to compiler for now
     resultRelationFun.setMetadata(QueryTextKey)(query)
@@ -105,24 +106,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         val innerRowElem = innerExp.elem.eRow
 
         val (outerJoinColumns, innerJoinColumns) = joinSpec match {
-          case Natural =>
-            val allOuterColumnNames = outerRowElem.asInstanceOf[StructElem[_]].fieldNames
-            val allInnerColumnNames = innerRowElem.asInstanceOf[StructElem[_]].fieldNames
-            val commonColumns = allOuterColumnNames.intersect(allInnerColumnNames).map(UnresolvedAttribute(None, _))
-            (commonColumns, commonColumns)
-          case Using(columnNames) =>
-            val columns = columnNames.map(UnresolvedAttribute(None, _))
-            (columns, columns)
           case On(condition) =>
             withContext(outer) {
               val OuterScopeName = currentScopeName
               withContext(inner) {
                 val InnerScopeName = currentScopeName
 
-                def columns(cond: Expression): List[(UnresolvedAttribute, UnresolvedAttribute)] = cond match {
+                def columns(cond: Expression): List[(ResolvedAttribute, ResolvedAttribute)] = cond match {
                   case BinOpExpr(SqlAST.And, l, r) =>
                     columns(l) ++ columns(r)
-                  case BinOpExpr(Eq, l: UnresolvedAttribute, r: UnresolvedAttribute) =>
+                  case BinOpExpr(Eq, l: ResolvedAttribute, r: ResolvedAttribute) =>
                     val bindingL = resolver.lookup(l)
                     val bindingR = resolver.lookup(r)
                     bindingL.scope match {
@@ -146,11 +139,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 columns(condition).unzip
               }
             }
+          case _ =>
+            !!!(s"Join spec $joinSpec survived SqlResolver", outerExp, innerExp)
         }
 
-        def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[UnresolvedAttribute]) = inferredFun(elem) { x =>
+        def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
           withContext(op) {
-            def column(column: UnresolvedAttribute) =
+            def column(column: ResolvedAttribute) =
               ExprInputs(currentScopeName -> x).resolveColumn(column)
 
             columns match {
@@ -216,16 +211,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           val comparator = generateComparator(p, by, inputs)(eRow)
           pExp.sort(comparator)
       }
-    case GroupBy(agg, by) =>
-      agg match {
-        case Project(p, columns) =>
-          withContext(p) {
-            generateOperator(p, inputs) match {
-              case pExp: RRelation[a] @unchecked =>
-                generateAggregate(columns, by, pExp, inputs)
-            }
-          }
-        case _ => throw SqlException("Unsupported group-by clause")
+    case Aggregate(p, groupedBy, aggregates) =>
+      generateOperator(p, inputs) match {
+        case pExp: RRelation[a] @unchecked =>
+          generateAggregate(aggregates, groupedBy, pExp, inputs)
       }
 
     case Filter(p, predicate) =>
@@ -244,18 +233,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       withContext(p) {
         generateOperator(p, inputs) match {
           case pExp: RRelation[a] @unchecked =>
-            columns.find(resolver.containsAggregates) match {
-              case None =>
-                val structLambda = generateStructLambdaExpr(p, columns, inputs)(pExp.elem.eRow).asRep[a => Any]
-                pExp.map(structLambda)
-              case Some(aggColumn) =>
-                columns.find(c => !resolver.containsAggregates(c)) match {
-                  case None =>
-                    generateAggregate(columns, Nil, pExp, inputs)
-                  case Some(nonAggColumn) =>
-                    !!!(s"Query contains both aggregate $aggColumn and non-aggregate $nonAggColumn", pExp)
-                }
-            }
+            assert(!columns.exists(resolver.containsAggregates),
+              "Aggregate columns in Project must be handled by SqlResolver")
+            val structLambda = generateStructLambdaExpr(p, columns, inputs)(pExp.elem.eRow).asRep[a => Any]
+            pExp.map(structLambda)
         }
       }
     case TableAlias(operator, alias) =>
@@ -279,65 +260,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     findInput(resolver.currScope)
   }
 
-  def generateAggregate[Row](columns: List[ProjectionColumn], groupedBy: List[Expression], pExp: Exp[Relation[Row]], inputs: ExprInputs) = {
-    def simplifyAgg(x: Expression): Expression = x match {
-      case AggregateExpr(Count, false, _) =>
-        CountAllExpr
-      case AggregateExpr(Avg, distinct, value) =>
-        val normalizedValue = simplifyAgg(value)
-        val sum = AggregateExpr(Sum, distinct, normalizedValue)
-        val count = if (distinct)
-          AggregateExpr(Count, distinct, normalizedValue)
-        else
-          CountAllExpr
-        BinOpExpr(Divide, CastExpr(sum, DoubleType), CastExpr(count, DoubleType))
-      case x: Literal => x
-      // ugly way to test for an `object`
-      case x if x.getClass.getSimpleName.endsWith("$") => x
-      case p: Product =>
-        val constructor = x.getClass.getConstructors.apply(0)
-        val members = p.productIterator.map {
-          case e: Expression => simplifyAgg(e)
-          case x => x.asInstanceOf[AnyRef]
-        }.toArray
-        constructor.newInstance(members: _*).asInstanceOf[Expression]
-    }
-
-    def extractAggregateExprs(expr: Expression): List[AggregateExpr] = expr match {
-      case agg: AggregateExpr =>
-        List(agg)
-      case BinOpExpr(_, l, r) =>
-        extractAggregateExprs(l) ++ extractAggregateExprs(r)
-      case LikeExpr(l, r, escape) =>
-        extractAggregateExprs(l) ++ extractAggregateExprs(r) ++
-          (escape match {
-            case None => Nil
-            case Some(escape) => extractAggregateExprs(escape)
-          })
-      case NegExpr(opd) =>
-        extractAggregateExprs(opd)
-      case NotExpr(opd) =>
-        extractAggregateExprs(opd)
-      case Literal(v, t) =>
-        Nil
-      case CastExpr(exp, typ) =>
-        extractAggregateExprs(exp)
-      case ref: UnresolvedAttribute =>
-        Nil
-      case SubstrExpr(str, from, len) =>
-        extractAggregateExprs(str) ++ extractAggregateExprs(from) ++ extractAggregateExprs(len)
-      case CaseWhenExpr(list) =>
-        list.flatMap(extractAggregateExprs)
-      case InListExpr(sel, list) =>
-        extractAggregateExprs(sel) ++ list.flatMap(extractAggregateExprs)
-      // case SelectExpr(s) =>
-      // case InExpr(sel, query) =>
-      case FuncExpr(name, args) =>
-        args.flatMap(extractAggregateExprs)
-      case _ =>
-        !!!(s"Don't know how to extract aggregate parts from a ${expr.getClass.getSimpleName}")
-    }
-
+  def generateAggregate[Row](aggregates: List[AggregateExpr], groupedBy: List[Expression], pExp: Exp[Relation[Row]], inputs: ExprInputs) = {
     def aggOperand(agg: AggregateExpr, inputs: ExprInputs): Exp[_] =
       agg.op match {
         case Count =>
@@ -402,12 +325,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         // Possibility that it's uniquely determined by `by` isn't covered currently.
         val fieldValue = groupedBy.indexWhere(resolver.matchExpr(_, column.alias, column.expr)) match {
           case -1 =>
-            try {
-              generateExpr(column.expr, ExprInputs(inputs.scopes, aggregates, value))
-            } catch {
-              case AggregateNotFound(agg, list) =>
-                !!!(s"Aggregate $agg is part of $column but not found among aggregate values", trackSyms: _*)
-            }
+            generateExpr(column.expr, inputs)
           case n =>
             field(key, n)
         }
@@ -418,15 +336,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
 
     implicit val eRow = pExp.elem.eRow
-
-    val normalizedColumns = columns.map { col =>
-      val normalized = simplifyAgg(col.expr)
-      col.copy(expr = normalized)
-    }
-
-    val aggregates = normalizedColumns.flatMap { col =>
-      extractAggregateExprs(col.expr)
-    }.distinct
 
     if (aggregates.exists(_.distinct)) {
       !!!(s"Distinct aggregates are not supported yet", pExp)
@@ -469,27 +378,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             //                  tupleStruct(byExps: _*)
             //              }
           }
-          val eK = mapKey.elem.eRange
 
-          val eKV = keyValElem(eK, eV)
-
-          val reduced = pExp.mapReduce(mapKey, newValue, reduce)
-
-          val finalProjection = inferredFun(eKV) { in =>
-            val key = field(in, keyFld).asRep[Struct]
-            val value = field(in, valFld).asRep[Struct]
-            aggFinalResult(normalizedColumns, groupedBy, aggregates, key, value)
-          }
-
-          reduced.map(finalProjection)
+          pExp.mapReduce(mapKey, newValue, reduce)
         } else {
-          val reduced = pExp.reduce(reduce, newValue)
-
-          val finalProjection = inferredFun(eV) { in =>
-            aggFinalResult(normalizedColumns, Nil, aggregates, null, in.asRep[Struct])
-          }
-
-          reduced.map(finalProjection)
+          pExp.reduce(reduce, newValue)
         }
     }
   }
@@ -553,7 +445,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def name(column: ProjectionColumn, unnamedCounter: IntRef) =
     column.alias.getOrElse {
       column.expr match {
-        case c: UnresolvedAttribute =>
+        case c: ResolvedAttribute =>
           c.name
         case _ =>
           unnamedCounter.elem += 1
@@ -676,19 +568,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     f(ord.asInstanceOf[Ordering[A]], elem.asElem[A])(l1.asRep[A], r1.asRep[A])
   }
 
-  case class AggregateNotFound(agg: AggregateExpr, list: List[AggregateExpr]) extends Exception
-
-  case class ExprInputs(scopes: Map[String, Exp[_]], aggregates: List[AggregateExpr], value: Exp[Struct]) {
-    def resolveAgg(agg: AggregateExpr) =
-      aggregates.indexOf(agg) match {
-        case -1 =>
-          throw new AggregateNotFound(agg, aggregates)
-        case n =>
-          field(value, n)
-      }
+  case class ExprInputs(scopes: Map[String, Exp[_]]) {
 
     // TODO inline
-    def resolveColumn(c: UnresolvedAttribute) = {
+    def resolveColumn(c: ResolvedAttribute) = {
       val binding = resolver.lookup(c)
       scopes.get(binding.scope) match {
         case None =>
@@ -723,15 +606,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   object ExprInputs {
-    def apply(scopes: (String, Exp[_])*): ExprInputs = new ExprInputs(scopes.toMap, Nil, null)
-    def apply(aggregates: List[AggregateExpr], value: Exp[Struct]) = new ExprInputs(Map.empty, aggregates, value)
+    def apply(scopes: (String, Exp[_])*): ExprInputs = new ExprInputs(scopes.toMap)
   }
 
 def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
     case agg: AggregateExpr =>
-      inputs.resolveAgg(agg)
+      !!!(s"generateExpr called on aggregate expression $agg, all aggregate expressions are handled separately")
     case c: UnresolvedAttribute =>
-      inputs.resolveColumn(c)
+      !!!(s"Unresolved attribute $c survived SqlResolver")
+    case resolved: ResolvedAttribute =>
+      inputs.resolveColumn(resolved)
     case BinOpExpr(op, l, r) =>
       val lExp = generateExpr(l, inputs)
       val rExp = generateExpr(r, inputs)

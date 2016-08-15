@@ -18,7 +18,7 @@ class SqlResolver(val schema: Schema) {
         }
       }
 
-    def lookup(col: UnresolvedAttribute): Binding = {
+    def lookup(col: ResolvedAttribute): Binding = {
       ctx.lookup(col) match {
         case Some(b) => b
         case None => {
@@ -26,12 +26,14 @@ class SqlResolver(val schema: Schema) {
             case Some(s: Scope) =>
               s.lookup(col)
             case _ =>
-              throw SqlException(
-                s"Failed to lookup column $col")
+              throw SqlException(s"Failed to lookup column $col")
           }
         }
       }
     }
+
+    // FIXME remove
+    def lookup(col: UnresolvedAttribute): Binding = lookup(resolve(col))
   }
 
   var currScope: Scope = Scope(GlobalContext, None, 0, "scalan")
@@ -244,6 +246,7 @@ class SqlResolver(val schema: Schema) {
 
   // should only be called from resolveExpr?
   def lookup(col: UnresolvedAttribute): Binding = currScope.lookup(col)
+  def lookup(col: ResolvedAttribute): Binding = currScope.lookup(col)
 
   def tablesInNestedSelects(e: Expression): Set[Table] = {
     e match {
