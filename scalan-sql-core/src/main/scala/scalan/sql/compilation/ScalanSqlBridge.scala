@@ -244,12 +244,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       withContext(p) {
         generateOperator(p, inputs) match {
           case pExp: RRelation[a] @unchecked =>
-            columns.find(resolver.isAggregate) match {
+            columns.find(resolver.containsAggregates) match {
               case None =>
                 val structLambda = generateStructLambdaExpr(p, columns, inputs)(pExp.elem.eRow).asRep[a => Any]
                 pExp.map(structLambda)
               case Some(aggColumn) =>
-                columns.find(c => !resolver.isAggregate(c)) match {
+                columns.find(c => !resolver.containsAggregates(c)) match {
                   case None =>
                     generateAggregate(columns, Nil, pExp, inputs)
                   case Some(nonAggColumn) =>
