@@ -161,7 +161,7 @@ object SqlAST {
           case Some(a) => s"$expr AS $a"
         }
       }
-      s"SELECT ${columns1.mkString(", ")}\nFROM $parent"
+      s"$parent\nSELECT ${columns1.mkString(", ")}"
     }
   }
 
@@ -171,6 +171,12 @@ object SqlAST {
 
   case class GroupBy(parent: Operator, columns: ExprList) extends Operator {
     override def toString = s"$parent\nGROUP BY ${columns.mkString(", ")}"
+  }
+
+  case class Aggregate(parent: Operator, groupedBy: List[Expression], aggregates: List[AggregateExpr]) extends Operator {
+    override def toString =
+      s"$parent\nAGGREGATE ${aggregates.mkString(", ")}" +
+        (if (groupedBy.nonEmpty) s"\nGROUP BY ${groupedBy.mkString(", ")}" else "")
   }
 
   abstract sealed class SortDirection

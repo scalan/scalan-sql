@@ -1,6 +1,7 @@
 package scalan.sql.parser
 
 import scalan.sql.parser.SqlAST._
+import scalan.util.ReflectionUtil
 
 class SqlResolver(val schema: Schema) {
   def table(name: String) = schema.table(name)
@@ -8,7 +9,7 @@ class SqlResolver(val schema: Schema) {
 
   case class Scope(var ctx: Context, outer: Option[Scope], nesting: Int, name: String) {
     def resolve(unresolved: UnresolvedAttribute): ResolvedAttribute =
-      ctx.resolve(unresolved).getOrElse {
+      ctx.resolveColumn(unresolved).getOrElse {
         outer match {
           case Some(s) =>
             s.resolve(unresolved)
@@ -43,6 +44,89 @@ class SqlResolver(val schema: Schema) {
     result
   }
 
+  def resolveAggregates(parent: Operator, groupedBy: ExprList, columns: List[ProjectionColumn]): Operator = {
+    def simplifyAgg(x: Expression): Expression = x match {
+      case AggregateExpr(Count, false, _) =>
+        CountAllExpr
+      case AggregateExpr(op, distinct, value) =>
+        val normalizedValue = simplifyAgg(resolveExpr(value))
+        op match {
+          case Avg =>
+            val sum = AggregateExpr(Sum, distinct, normalizedValue)
+            val count = if (distinct)
+              AggregateExpr(Count, distinct, normalizedValue)
+            else
+              CountAllExpr
+            BinOpExpr(Divide, CastExpr(sum, DoubleType), CastExpr(count, DoubleType))
+          case _ =>
+            AggregateExpr(op, distinct, normalizedValue)
+        }
+      case x: Literal => x
+      case x if ReflectionUtil.isSingleton(x) => x
+      case p: Product =>
+        val constructor = x.getClass.getConstructors.apply(0)
+        val members = p.productIterator.map {
+          case e: Expression => simplifyAgg(e)
+          case x => x.asInstanceOf[AnyRef]
+        }.toArray
+        constructor.newInstance(members: _*).asInstanceOf[Expression]
+    }
+
+    def extractAggregateExprs(expr: Expression): List[AggregateExpr] = expr match {
+      case agg: AggregateExpr =>
+        List(agg)
+      case BinOpExpr(_, l, r) =>
+        extractAggregateExprs(l) ++ extractAggregateExprs(r)
+      case LikeExpr(l, r, escape) =>
+        extractAggregateExprs(l) ++ extractAggregateExprs(r) ++ escape.toList.flatMap(extractAggregateExprs)
+      case NegExpr(opd) =>
+        extractAggregateExprs(opd)
+      case NotExpr(opd) =>
+        extractAggregateExprs(opd)
+      case Literal(v, t) =>
+        Nil
+      case CastExpr(exp, typ) =>
+        extractAggregateExprs(exp)
+      case ref: UnresolvedAttribute =>
+        Nil
+      case SubstrExpr(str, from, len) =>
+        extractAggregateExprs(str) ++ extractAggregateExprs(from) ++ extractAggregateExprs(len)
+      case CaseWhenExpr(list) =>
+        list.flatMap(extractAggregateExprs)
+      case InListExpr(sel, list) =>
+        extractAggregateExprs(sel) ++ list.flatMap(extractAggregateExprs)
+      // case SelectExpr(s) =>
+      // case InExpr(sel, query) =>
+      case FuncExpr(name, args) =>
+        args.flatMap(extractAggregateExprs)
+      case _ =>
+        throw new SqlException(s"Don't know how to extract aggregate parts from a ${expr.getClass.getSimpleName}")
+    }
+
+    columns.find { c =>
+      val expr = c.expr
+      !(containsAggregates(expr) || groupedBy.contains(expr))
+    } match {
+      case Some(projectionColumn) =>
+        throw new SqlException(s"Non-aggregate column $projectionColumn in an aggregate query")
+      case None =>
+        val normalizedColumns = columns.map { col =>
+          val normalized = simplifyAgg(col.expr)
+          col.copy(expr = normalized)
+        }
+
+        val aggregates = normalizedColumns.flatMap { col =>
+          extractAggregateExprs(col.expr)
+        }.distinct
+
+        val aggregate = Aggregate(parent, groupedBy.map(resolveExpr), aggregates)
+
+        withContext(aggregate) {
+          Project(aggregate, normalizedColumns.map(c => c.copy(expr = resolveExpr(c.expr))))
+        }
+    }
+  }
+
   def resolveOperator(op: Operator): Operator = op match {
     case Scan(tableName, _) =>
       op
@@ -56,21 +140,25 @@ class SqlResolver(val schema: Schema) {
       Intersect(resolveOperator(left), resolveOperator(right))
     case TableAlias(table, alias) =>
       TableAlias(resolveOperator(table), alias)
-    case Project(parent, columns) =>
-      val parent1 = resolveOperator(parent)
-      withContext(parent1) {
-        val columns1 = columns.map(col => col.copy(expr = resolveExpr(col.expr)))
-        Project(parent1, columns1)
-      }
     case Filter(parent, predicate) =>
       val parent1 = resolveOperator(parent)
       withContext(parent1) {
         Filter(parent1, resolveExpr(predicate))
       }
-    case GroupBy(parent, columns) =>
+    case Project(parent, columns) =>
       val parent1 = resolveOperator(parent)
       withContext(parent1) {
-        GroupBy(parent1, columns.map(resolveExpr))
+        if (columns.exists(containsAggregates))
+          resolveAggregates(parent1, Nil, columns)
+        else {
+          val columns1 = columns.map(col => col.copy(expr = resolveExpr(col.expr)))
+          Project(parent1, columns1)
+        }
+      }
+    case GroupBy(Project(parent, columns), groupedBy) =>
+      val parent1 = resolveOperator(parent)
+      withContext(parent1) {
+        resolveAggregates(parent1, groupedBy, columns)
       }
     case OrderBy(parent, columns) =>
       val parent1 = resolveOperator(parent)
@@ -112,6 +200,8 @@ class SqlResolver(val schema: Schema) {
       CrossJoin(resolveOperator(outer), resolveOperator(inner))
     case UnionJoin(outer, inner) =>
       UnionJoin(resolveOperator(outer), resolveOperator(inner))
+    case _ =>
+      throw new NotImplementedError(s"Can't resolve operator\n$op")
   }
 
   def resolveExpr(expr: Expression): Expression = expr match {
@@ -119,8 +209,11 @@ class SqlResolver(val schema: Schema) {
       SelectExpr(resolveOperator(op))
     case BinOpExpr(op, left, right) =>
       BinOpExpr(op, resolveExpr(left), resolveExpr(right))
-    case AggregateExpr(op, distinct, value) =>
-      AggregateExpr(op, distinct, resolveExpr(value))
+    case agg @ AggregateExpr(op, distinct, value) =>
+      currScope.ctx.resolveAggregate(agg).getOrElse {
+        throw new SqlException(s"Aggregate $agg not found")
+      }
+      // AggregateExpr(op, distinct, resolveExpr(value))
     case LikeExpr(left, right, escape) =>
       LikeExpr(resolveExpr(left), resolveExpr(right), escape.map(resolveExpr))
     case InListExpr(expr, list) =>
@@ -170,8 +263,8 @@ class SqlResolver(val schema: Schema) {
     op match {
       case Join(outer, inner, _, _) => tables(outer) ++ tables(inner)
       case Scan(t, _) => Set(table(t))
-      case OrderBy(p, by) => tables(p)
-      case GroupBy(p, by) => tables(p)
+      case OrderBy(p, _) => tables(p)
+      case Aggregate(p, _, _) => tables(p)
       case Filter(p, predicate) => tables(p) ++ tablesInNestedSelects(predicate)
       case Project(p, columns) => tables(p)
       case TableAlias(t, a) => tables(t)
@@ -189,20 +282,21 @@ class SqlResolver(val schema: Schema) {
   case class Binding(scope: String, path: List[Selector])
 
   abstract class Context {
-    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute]
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute]
+    def resolveAggregate(agg: AggregateExpr): Option[ResolvedAttribute] = None
     def lookup(resolved: ResolvedAttribute): Option[Binding]
-    def lookup(unresolved: UnresolvedAttribute): Option[Binding] = resolve(unresolved).flatMap(lookup)
+    def lookup(unresolved: UnresolvedAttribute): Option[Binding] = resolveColumn(unresolved).flatMap(lookup)
 
     val scope = currScope
   }
 
   case object GlobalContext extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = None
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = None
     def lookup(resolved: ResolvedAttribute): Option[Binding] = None
   }
 
   case class TableContext(table: Table, id: Int) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
       val qualifier = ref.table
       if (qualifier.isEmpty || qualifier == Some(table.name)) {
         table.columns.indexWhere(c => c.name == ref.name) match {
@@ -226,8 +320,8 @@ class SqlResolver(val schema: Schema) {
   }
 
   case class JoinContext(outer: Context, inner: Context) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
-      (outer.resolve(ref), inner.resolve(ref)) match {
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
+      (outer.resolveColumn(ref), inner.resolveColumn(ref)) match {
         case (Some(b), None) =>
           Some(b)
         case (None, Some(b)) =>
@@ -254,12 +348,12 @@ class SqlResolver(val schema: Schema) {
   }
 
   case class AliasContext(parent: Context, alias: String) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] =
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] =
       ref.table match {
         case None =>
-          parent.resolve(ref)
+          parent.resolveColumn(ref)
         case Some(`alias`) =>
-          parent.resolve(UnresolvedAttribute(None, ref.name))
+          parent.resolveColumn(UnresolvedAttribute(None, ref.name))
         case _ =>
           None
       }
@@ -269,7 +363,7 @@ class SqlResolver(val schema: Schema) {
   }
 
   case class ProjectContext(parent: Context, columns: List[ProjectionColumn]) extends Context {
-    def resolve(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
       columns.indexWhere {
         case ProjectionColumn(c, alias) => matchExpr(c, alias, ref)
       } match {
@@ -295,17 +389,38 @@ class SqlResolver(val schema: Schema) {
     }
   }
 
+  case class AggregateContext(parent: Context, groupedBy: List[Expression], aggregates: List[AggregateExpr]) extends Context {
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = None
+
+    override def resolveAggregate(agg: AggregateExpr): Option[ResolvedAttribute] =
+      aggregates.indexOf(agg) match {
+        case -1 =>
+          None
+        case i =>
+          Some(ResolvedProjectedAttribute(agg, agg.toString, i, getExprType(agg)))
+      }
+
+    override def lookup(resolved: ResolvedAttribute): Option[Binding] =
+      groupedBy.indexOf(resolved) match {
+        case -1 =>
+          None
+        case i =>
+          Some(Binding(scope.name, List(Field("key"), Index(i))))
+      }
+  }
+
   def buildContext(op: Operator): Context = {
     op match {
       case Join(outer, inner, _, _) => JoinContext(buildContext(outer), buildContext(inner))
       case Scan(t, id) => TableContext(table(t), id)
       case OrderBy(p, by) => buildContext(p)
-      case GroupBy(p, by) => buildContext(p)
+      case GroupBy(p, by) => buildContext(p) // FIXME remove
       case Filter(p, predicate) => buildContext(p)
       case Project(p, columns) => ProjectContext(buildContext(p), columns)
+      case Aggregate(p, groupedBy, aggregates) => AggregateContext(buildContext(p), groupedBy, aggregates)
       case TableAlias(p, a) => AliasContext(buildContext(p), a)
       case SubSelect(p) => buildContext(p)
-      case _ => throw new NotImplementedError(s"tables($op)")
+      case _ => throw new NotImplementedError(s"buildContext($op)")
     }
   }
 
@@ -394,24 +509,21 @@ class SqlResolver(val schema: Schema) {
     case (tpe, funs) => funs.foreach(registerFunctionType(_, tpe))
   }
 
-  def isAggregate(column: ProjectionColumn): Boolean =
-    isAggregate(column.expr)
+  def containsAggregates(column: ProjectionColumn): Boolean =
+    containsAggregates(column.expr)
 
-  def isAggregate(expr: Expression): Boolean =
+  def containsAggregates(expr: Expression): Boolean =
     expr match {
       case _: AggregateExpr =>
         true
       case BinOpExpr(_, l, r) =>
-        isAggregate(l) || isAggregate(r)
+        containsAggregates(l) || containsAggregates(r)
       case NegExpr(opd) =>
-        isAggregate(opd)
+        containsAggregates(opd)
       case NotExpr(opd) =>
-        isAggregate(opd)
+        containsAggregates(opd)
       case _ => false
     }
-
-  def isGrandAggregate(columns: List[ProjectionColumn]): Boolean =
-    columns.forall(isAggregate)
 
   // complex logic, not sure it's correct!
   def matchExpr(col: Expression, alias: Option[String], exp: Expression): Boolean = {
@@ -430,7 +542,7 @@ class SqlResolver(val schema: Schema) {
     case Join(outer, inner, _, _) => depends(on, outer) || depends(on, inner)
     case Scan(t, _) => false
     case OrderBy(p, by) => depends(on, p) || using(on, by.map(_.expr))
-    case GroupBy(p, by) => depends(on, p) || using(on, by)
+    case Aggregate(p, groupedBy, columns) => depends(on, p) || using(on, groupedBy) || using(on, columns)
     case Filter(p, predicate) => depends(on, p) || using(on, predicate)
     case Project(p, columns) => depends(on, p) || using(on, columns.map(_.expr))
     case TableAlias(t, a) => depends(on, t)
@@ -450,7 +562,7 @@ class SqlResolver(val schema: Schema) {
       case NotExpr(opd) => using(op, opd)
       case Literal(v, t) => false
       case CastExpr(exp, typ) => using(op, exp)
-      case ref: UnresolvedAttribute => buildContext(op).resolve(ref).isDefined
+      case ref: UnresolvedAttribute => buildContext(op).resolveColumn(ref).isDefined
       case SelectExpr(s) => depends(op, s)
       case AggregateExpr(_, _, opd) => using(op, opd)
       case SubstrExpr(str, from, len) => using(op, str) || using(op, from) || using(op, len)
