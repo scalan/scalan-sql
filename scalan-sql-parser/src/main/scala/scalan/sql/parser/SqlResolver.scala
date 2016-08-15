@@ -18,7 +18,7 @@ class SqlResolver(val schema: Schema) {
         }
       }
 
-    def lookup(col: UnresolvedAttribute): Binding = {
+    def lookup(col: ResolvedAttribute): Binding = {
       ctx.lookup(col) match {
         case Some(b) => b
         case None => {
@@ -26,8 +26,7 @@ class SqlResolver(val schema: Schema) {
             case Some(s: Scope) =>
               s.lookup(col)
             case _ =>
-              throw SqlException(
-                s"Failed to lookup column $col")
+              throw SqlException(s"Failed to lookup column $col")
           }
         }
       }
@@ -242,8 +241,7 @@ class SqlResolver(val schema: Schema) {
       currScope.resolve(unresolved)
   }
 
-  // should only be called from resolveExpr?
-  def lookup(col: UnresolvedAttribute): Binding = currScope.lookup(col)
+  def lookup(col: ResolvedAttribute): Binding = currScope.lookup(col)
 
   def tablesInNestedSelects(e: Expression): Set[Table] = {
     e match {
@@ -316,7 +314,7 @@ class SqlResolver(val schema: Schema) {
       case _ => None
     }
 
-    override def toString: String = s"TableContext(${table.name})"
+    override def toString: String = s"TableContext(${table.name}{$id})"
   }
 
   case class JoinContext(outer: Context, inner: Context) extends Context {
@@ -403,9 +401,14 @@ class SqlResolver(val schema: Schema) {
     override def lookup(resolved: ResolvedAttribute): Option[Binding] =
       groupedBy.indexOf(resolved) match {
         case -1 =>
-          None
+          resolved match {
+            case ResolvedProjectedAttribute(agg: AggregateExpr, _, i, _) =>
+              val path = if (groupedBy.nonEmpty) List(Index(1), Index(i)) else List(Index(i))
+              Some(Binding(scope.name, path))
+            case _ => None
+          }
         case i =>
-          Some(Binding(scope.name, List(Field("key"), Index(i))))
+          Some(Binding(scope.name, List(Index(0), Index(i))))
       }
   }
 

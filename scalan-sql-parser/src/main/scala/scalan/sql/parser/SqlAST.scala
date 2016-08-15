@@ -176,7 +176,7 @@ object SqlAST {
   case class Aggregate(parent: Operator, groupedBy: List[Expression], aggregates: List[AggregateExpr]) extends Operator {
     override def toString =
       s"$parent\nAGGREGATE ${aggregates.mkString(", ")}" +
-        (if (groupedBy.nonEmpty) s"\nGROUP BY ${groupedBy.mkString(", ")}" else "")
+        (if (groupedBy.nonEmpty) s" GROUP BY ${groupedBy.mkString(", ")}" else "")
   }
 
   abstract sealed class SortDirection
