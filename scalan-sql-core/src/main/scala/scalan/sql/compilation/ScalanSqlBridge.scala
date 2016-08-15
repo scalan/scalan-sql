@@ -694,65 +694,24 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         case None =>
           !!!(s"Failed to resolve $c. Binding is $binding.")
         case Some(x) =>
-          def _1(y: Exp[_]) =
-            y.elem match {
-              case pe: PairElem[a, b] =>
-                y.asRep[(a, b)]._1
-              case se: StructElem[_] =>
-                field(y.asRep[Struct], 0)
-            }
-          def _2(y: Exp[_]) =
-            y.elem match {
-              case pe: PairElem[a, b] =>
-                y.asRep[(a, b)]._2
-              case se: StructElem[_] =>
-                field(y.asRep[Struct], 1)
-            }
-
           binding.path.foldLeft[Exp[_]](x) {
-            case (y, "head") =>
-              _1(y)
-            case (y, "tail") =>
-              _2(y)
-            case (y, fieldName) =>
-              // TODO fix bindings in SqlCompiler to avoid the need for this code
+            case (y, resolver.First) =>
               y.elem match {
                 case pe: PairElem[a, b] =>
-                  fieldName match {
-                    case "head" =>
-                      _1(y)
-                    case "tail" =>
-                      _2(y)
-                    case _ =>
-                      @tailrec
-                      def tupleMemberByIndex(z: Exp[_], index: Int): Exp[_] = {
-                        index match {
-                          case 1 =>
-                            _1(z)
-                          case 2 if !z.elem.isInstanceOf[PairElem[_, _]] =>
-                            _2(z)
-                          case _ =>
-                            tupleMemberByIndex(_2(z), index - 1)
-                        }
-                      }
-
-                      try {
-                        val index = fieldName.stripPrefix("_").toInt
-                        tupleMemberByIndex(y, index)
-                      } catch {
-                        case e: NumberFormatException =>
-                          !!!(s"Tried to get field named $fieldName from a tuple $y", y)
-                      }
-                  }
+                  y.asRep[(a, b)]._1
+              }
+            case (y, resolver.Second) =>
+              y.elem match {
+                case pe: PairElem[a, b] =>
+                  y.asRep[(a, b)]._2
+              }
+            case (y, resolver.Field(fieldName)) =>
+              field(y.asRep[Struct], fieldName)
+            case (y, resolver.Index(i)) =>
+              y.elem match {
                 case se: StructElem[_] =>
-                  val fieldName1 = try {
-                    val index = fieldName.stripPrefix("_").toInt
-                    se.fieldNames(index - 1)
-                  } catch {
-                    case e: NumberFormatException =>
-                      fieldName
-                  }
-                  field(y.asRep[Struct], fieldName1)
+                  val fieldName = se.fieldNames(i)
+                  field(y.asRep[Struct], fieldName)
               }
           }
       }

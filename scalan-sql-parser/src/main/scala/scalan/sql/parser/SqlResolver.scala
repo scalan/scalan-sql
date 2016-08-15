@@ -170,15 +170,13 @@ class SqlResolver(val schema: Schema) {
     }
   }
 
-  def indexToPath(i: Int, n: Int) = {
-    if (n > 1 && (n <= 8 || i < 7)) List("_" + (i + 1))
-    else {
-      val path = List.fill(i)("tail")
-      if (i == n - 1) path else path :+ "head"
-    }
-  }
+  sealed trait Selector
+  case class Field(name: String) extends Selector
+  case class Index(i: Int) extends Selector
+  case object First extends Selector
+  case object Second extends Selector
 
-  case class Binding(scope: String, path: List[String], attribute: ResolvedAttribute)
+  case class Binding(scope: String, path: List[Selector], attribute: ResolvedAttribute)
 
   sealed abstract class Context {
     def resolve(ref: UnresolvedAttribute): Option[Binding]
@@ -195,8 +193,7 @@ class SqlResolver(val schema: Schema) {
       if (ref.table.isEmpty || ref.table == Some(table.name)) {
         val i = table.columns.indexWhere(c => c.name == ref.name)
         if (i >= 0) {
-          val path = List(ref.name)
-          Some(Binding(scope.name, path, ResolvedTableAttribute(table, id, i)))
+          Some(Binding(scope.name, List(Field(ref.name)), ResolvedTableAttribute(table, id, i)))
         } else None
       } else None
     }
@@ -208,10 +205,10 @@ class SqlResolver(val schema: Schema) {
     def resolve(ref: UnresolvedAttribute): Option[Binding] = {
       (outer.resolve(ref), inner.resolve(ref)) match {
         case (Some(b), None) =>
-          val b1 = b.copy(path = "head" :: b.path)
+          val b1 = b.copy(path = First :: b.path)
           Some(b1)
         case (None, Some(b)) =>
-          val b1 = b.copy(path = "tail" :: b.path)
+          val b1 = b.copy(path = Second :: b.path)
           Some(b1)
         case (Some(_), Some(_)) =>
           throw SqlException(s"Ambiguous reference to $ref")
@@ -245,7 +242,7 @@ class SqlResolver(val schema: Schema) {
         val cType = getExprType(parentExpr)
         val attr = ResolvedProjectedAttribute(parentExpr, ref.name, cType)
         currScope = saveScope
-        Some(Binding(scope.name, indexToPath(i, columns.length), attr))
+        Some(Binding(scope.name, List(Index(i)), attr))
       }
       else None
     }
