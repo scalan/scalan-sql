@@ -619,4 +619,12 @@ class SqlResolver(val schema: Schema) {
         throw new SqlException(s"Can't check if $op depends on $expr")
     }
   }
+
+  def underlyingTableColumn(expr: Expression): Option[ResolvedTableAttribute] = expr match {
+    case tableAttribute: ResolvedTableAttribute =>
+      Some(tableAttribute)
+    case projectedAttribute: ResolvedProjectedAttribute =>
+      underlyingTableColumn(projectedAttribute.parent)
+    case _ => None
+  }
 }

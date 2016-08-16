@@ -262,13 +262,27 @@ object SqlAST {
   case object And extends LogicOp("AND")
   case object Or extends LogicOp("OR")
 
-  sealed abstract class ComparisonOp(name: String) extends BinOp(name)
-  case object Eq extends ComparisonOp("=")
-  case object Greater extends ComparisonOp(">")
-  case object GreaterEq extends ComparisonOp(">=")
-  case object Less extends ComparisonOp("<")
-  case object LessEq extends ComparisonOp("<=")
-  case object Is extends ComparisonOp("IS")
+  sealed abstract class ComparisonOp(name: String) extends BinOp(name) {
+    def inverse: ComparisonOp
+  }
+  case object Eq extends ComparisonOp("=") {
+    def inverse = Eq
+  }
+  case object Greater extends ComparisonOp(">") {
+    def inverse = Less
+  }
+  case object GreaterEq extends ComparisonOp(">=") {
+    def inverse = LessEq
+  }
+  case object Less extends ComparisonOp("<") {
+    def inverse = Greater
+  }
+  case object LessEq extends ComparisonOp("<=") {
+    def inverse = GreaterEq
+  }
+  case object Is extends ComparisonOp("IS") {
+    def inverse = Is
+  }
 
   case object Concat extends BinOp("||")
 

@@ -42,6 +42,7 @@ trait ScalanSql extends ScalanDsl with ItersDsl with RelationsDsl {
   implicit val indexElem = new BaseElem[Index](null)
   val SqlOperatorKey = MetaKey[Operator]("sql-origin-operator")
   val SqlExpressionKey = MetaKey[Expression]("sql-origin-expression")
+  val CandidateIndicesKey = MetaKey[List[Index]]("sql-candidate-indices")
 
   // same as ToString, but without rewriting (x: String).toString => x
   // this way it can be used to generate to_lua_string in the end
