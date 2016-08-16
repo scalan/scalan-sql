@@ -141,9 +141,10 @@ class SqlResolver(val schema: Schema) {
       TableAlias(resolveOperator(table), alias)
     case Filter(parent, predicate) =>
       val parent1 = resolveOperator(parent)
-      withContext(parent1) {
-        Filter(parent1, resolveExpr(predicate))
+      val predicate1 = withContext(parent1) {
+        resolveExpr(predicate)
       }
+      pushdownFilter(parent1, predicate1)
     case Project(parent, columns) =>
       val parent1 = resolveOperator(parent)
       withContext(parent1) {
@@ -201,6 +202,43 @@ class SqlResolver(val schema: Schema) {
       UnionJoin(resolveOperator(outer), resolveOperator(inner))
     case _ =>
       throw new NotImplementedError(s"Can't resolve operator\n$op")
+  }
+
+  def conjunctiveClauses(predicate: Expression): List[Expression] = predicate match {
+    case BinOpExpr(And, l, r) =>
+      conjunctiveClauses(l) ++ conjunctiveClauses(r)
+    case _ =>
+      List(predicate)
+  }
+
+  def pushdownFilter(parent: Operator, predicate: Expression): Operator = {
+    val clauses = conjunctiveClauses(predicate)
+
+    // returns the list of clauses which remain unhandled
+    def doPushdown(op: Operator, clauses: List[Expression]): (Operator, List[Expression]) = op match {
+      // TODO handle other op cases
+      case Join(outer, inner, joinType, joinSpec) =>
+        val (clausesDependingOnInner, outerOnlyClauses) = clauses.partition(depends(inner, _))
+        val outer1 = doPushdownWithNoRemainingClauses(outer, outerOnlyClauses)
+        val (clausesDependingOnBoth, innerOnlyClauses) = clausesDependingOnInner.partition(depends(outer, _))
+        val inner1 = doPushdownWithNoRemainingClauses(inner, innerOnlyClauses)
+        (Join(outer1, inner1, joinType, joinSpec), clausesDependingOnBoth)
+      case _ => (op, clauses)
+    }
+
+    def doPushdownWithNoRemainingClauses(op: Operator, clauses: List[Expression]) = {
+      val (pushedDown, remainingClauses) = doPushdown(op, clauses)
+      remainingClauses match {
+        case Nil =>
+          pushedDown
+        case _ =>
+          // TODO check if repeated filters perform better due to lack of shortcutting
+          val remainingPredicate = remainingClauses.reduce(BinOpExpr(And, _, _))
+          Filter(pushedDown, remainingPredicate)
+      }
+    }
+
+    doPushdownWithNoRemainingClauses(parent, clauses)
   }
 
   def resolveExpr(expr: Expression): Expression = expr match {
@@ -544,65 +582,37 @@ class SqlResolver(val schema: Schema) {
   def depends(on: Operator, subquery: Operator): Boolean = subquery match {
     case Join(outer, inner, _, _) => depends(on, outer) || depends(on, inner)
     case Scan(t, _) => false
-    case OrderBy(p, by) => depends(on, p) || using(on, by.map(_.expr))
-    case Aggregate(p, groupedBy, columns) => depends(on, p) || using(on, groupedBy) || using(on, columns)
-    case Filter(p, predicate) => depends(on, p) || using(on, predicate)
-    case Project(p, columns) => depends(on, p) || using(on, columns.map(_.expr))
+    case OrderBy(p, by) => depends(on, p) || depends(on, by.map(_.expr))
+    case Aggregate(p, groupedBy, columns) => depends(on, p) || depends(on, groupedBy) || depends(on, columns)
+    case Filter(p, predicate) => depends(on, p) || depends(on, predicate)
+    case Project(p, columns) => depends(on, p) || depends(on, columns.map(_.expr))
     case TableAlias(t, a) => depends(on, t)
     case SubSelect(p) => depends(on, p)
     case _ => false
   }
 
-  def using(op: Operator, list: ExprList): Boolean = list.exists(e => using(op, e))
+  def depends(op: Operator, list: ExprList): Boolean = list.exists(e => depends(op, e))
 
-  def using(op: Operator, predicate: Expression): Boolean = {
-    predicate match {
-      case BinOpExpr(_, l, r) => using(op, l) || using(op, r)
+  def depends(op: Operator, expr: Expression): Boolean = {
+    expr match {
+      case BinOpExpr(_, l, r) => depends(op, l) || depends(op, r)
       case ExistsExpr(q) => depends(op, q)
       case LikeExpr(l, r, escape) =>
-        using(op, l) || using(op, r) || escape.exists(using(op, _))
-      case NegExpr(opd) => using(op, opd)
-      case NotExpr(opd) => using(op, opd)
+        depends(op, l) || depends(op, r) || escape.exists(depends(op, _))
+      case NegExpr(opd) => depends(op, opd)
+      case NotExpr(opd) => depends(op, opd)
       case Literal(v, t) => false
-      case CastExpr(exp, typ) => using(op, exp)
-      case ref: UnresolvedAttribute => buildContext(op).resolveColumn(ref).isDefined
+      case CastExpr(exp, typ) => depends(op, exp)
+      case resolved: ResolvedAttribute => buildContext(op).lookup(resolved).isDefined
       case SelectExpr(s) => depends(op, s)
-      case AggregateExpr(_, _, opd) => using(op, opd)
-      case SubstrExpr(str, from, len) => using(op, str) || using(op, from) || using(op, len)
-      case CaseWhenExpr(list) => using(op, list)
-      case InListExpr(sel, lst) => using(op, sel) || using(op, lst)
-      case InExpr(sel, query) => using(op, sel) || depends(op, query)
-      case FuncExpr(name, args) => using(op, args)
-      case _ => false
+      case AggregateExpr(_, _, opd) => depends(op, opd)
+      case SubstrExpr(str, from, len) => depends(op, str) || depends(op, from) || depends(op, len)
+      case CaseWhenExpr(list) => depends(op, list)
+      case InListExpr(sel, lst) => depends(op, sel) || depends(op, lst)
+      case InExpr(sel, query) => depends(op, sel) || depends(op, query)
+      case FuncExpr(name, args) => depends(op, args)
+      case _ =>
+        throw new SqlException(s"Can't check if $op depends on $expr")
     }
   }
-
-  def and(left: Expression, right: Expression) = {
-    if (left == Literal(true, BoolType) || right == Literal(false, BoolType))
-      right
-    else if (right == Literal(true, BoolType) || left == Literal(false, BoolType))
-      left
-    else
-      BinOpExpr(And, left, right)
-  }
-
-  // FIXME should probably be done in SqlBridge, and if here, differently
-  // e.g. return list of conjuncts instead of a single expression?
-  def optimize(op: Operator, predicate: Expression): (Operator, Expression) = op match {
-    case Join(outer, inner, joinType, joinSpec) =>
-      if (!using(inner, predicate))
-        (Join(Filter(outer, predicate), inner, joinType, joinSpec), Literal(true, BoolType))
-      else if (!using(outer, predicate))
-        (Join(outer, Filter(inner, predicate), joinType, joinSpec), Literal(true, BoolType))
-      else
-        predicate match {
-          case BinOpExpr(And, l, r) =>
-            val (jr, cr) = optimize(op, r)
-            val (jl, cl) = optimize(jr, l)
-            (jl, and(cl, cr))
-          case _ => (op, predicate)
-        }
-    case _ => (op, predicate)
-  }
-
 }

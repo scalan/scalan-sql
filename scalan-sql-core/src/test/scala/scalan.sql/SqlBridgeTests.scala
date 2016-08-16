@@ -61,6 +61,13 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
         |    l_returnflag""".stripMargin))
   }
 
+  it("filter comparing columns from different tables") {
+    testQuery(TestQuery(
+      """select l_orderkey
+        |from orders join lineitem on l_orderkey = o_orderkey
+        |where o_orderdate < l_shipdate""".stripMargin))
+  }
+
   // FIXME need to rework SqlResolver to handle these cases
   it("order by and filter on non-selected columns") {
     pendingUntilFixed {

@@ -219,16 +219,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           }
       }
     case Filter(p, predicate) =>
-      val (joins, conjuncts) = resolver.optimize(p, predicate)
-      generateOperator(joins, inputs) match {
+      generateOperator(p, inputs) match {
         case joinsExp: RRelation[a] @unchecked =>
-          conjuncts match {
-            case Literal(_, _) => // Is this right?
-              joinsExp
-            case _ =>
-              val eRow = joinsExp.elem.eRow
-              joinsExp.filter(generateLambdaExpr(p, conjuncts, inputs)(eRow).asRep[a => Boolean])
-          }
+          val eRow = joinsExp.elem.eRow
+          joinsExp.filter(generateLambdaExpr(p, predicate, inputs)(eRow).asRep[a => Boolean])
       }
     case Project(p, columns) =>
       withContext(p) {
