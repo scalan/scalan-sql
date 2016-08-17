@@ -138,6 +138,8 @@ class SqlResolver(val schema: Schema) {
     case Intersect(left, right) =>
       Intersect(resolveOperator(left), resolveOperator(right))
     case TableAlias(table, alias) =>
+      // TODO alias should be removed during resolution, but we need to make sure AliasContext is produced
+      // For now aliases are just ignored in ScalanSqlBridge
       TableAlias(resolveOperator(table), alias)
     case Filter(parent, predicate) =>
       val parent1 = resolveOperator(parent)

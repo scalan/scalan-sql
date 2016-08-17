@@ -57,12 +57,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     reuseDetector = false
     val parsedSql = parser.parseSelect(query).operator
     val resolved = resolver.resolveOperator(parsedSql)
-    val tables = allTables(resolved).toSeq.distinct
+    val tables = allScans(resolved).toSeq.distinct
 
     val inputRowElems = tables.map {
-      case (name, table) =>
+      case (name, scan) =>
         // TODO include only required columns
-        val eRow = tableElems.getOrElse(table.name, !!!(s"Table $name not found"))
+        val eRow = tableElems.getOrElse(scan.tableName, !!!(s"Table $name not found"))
         (name, eRow)
     }
 
@@ -83,19 +83,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     resultRelationFun
   }
 
-  object ScanOrScanAlias {
-    def unapply(op: Operator) = op match {
-      case Scan(tableName, _) => Some(tableName -> resolver.table(tableName))
-      case TableAlias(Scan(tableName, _), name) => Some(s"$tableName as $name" -> resolver.table(tableName))
-      case _ => None
-    }
-  }
+  def scanIterName(s: Scan) = s"${s.tableName}{${s.id}}"
 
-  def allTables(op: Any): Iterator[(String, Table)] = op match {
-    case ScanOrScanAlias(relationName, table) =>
-      Iterator(relationName -> table)
+  def allScans(op: Any): Iterator[(String, Scan)] = op match {
+    case s: Scan =>
+      Iterator(scanIterName(s) -> s)
     case p: Product =>
-      p.productIterator.flatMap(allTables)
+      p.productIterator.flatMap(allScans)
     case _ => Iterator.empty
   }
 
@@ -176,7 +170,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = ((op match {
     case Join(outer, inner, joinType, joinSpec) =>
       generateJoin(outer, inner, joinType, joinSpec, inputs)
-    case ScanOrScanAlias(relationName, table) =>
+    case s: Scan =>
       def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
         case se: StructElem[_] =>
           val x1 = x.asRep[Struct]
@@ -203,7 +197,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         !!!(s"Can't find $FakeDepName in ${currentLambdaArg.toStringWithType}")
       }
 
-      inputs(relationName).asInstanceOf[RFunc[Int, Relation[_]]](fakeDep)
+      val fieldName = scanIterName(s)
+      inputs(fieldName).asInstanceOf[RFunc[Int, Relation[_]]](fakeDep)
     case OrderBy(p, by) =>
       generateOperator(p, inputs) match {
         case pExp: RRelation[a] @unchecked =>
@@ -235,7 +230,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         }
       }
     case TableAlias(operator, alias) =>
-      assert(!operator.isInstanceOf[Scan], s"$op should be handled in ScanOrScanAlias case")
       generateOperator(operator, inputs)
     case SubSelect(p) =>
       generateOperator(p, inputs)
