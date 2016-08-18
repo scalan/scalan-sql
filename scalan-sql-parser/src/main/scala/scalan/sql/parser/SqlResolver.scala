@@ -401,7 +401,15 @@ class SqlResolver(val schema: Schema) {
   case class ProjectContext(parent: Context, columns: List[ProjectionColumn]) extends Context {
     def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
       columns.indexWhere {
-        case ProjectionColumn(c, alias) => matchExpr(c, alias, ref)
+        case ProjectionColumn(col, alias) =>
+          ref match {
+            case UnresolvedAttribute(None, name) =>
+              alias == Some(name) || (col match {
+                case resolved: ResolvedAttribute => resolved.name == name
+                case _ => false
+              })
+            case _ => false
+          }
       } match {
         case -1 =>
           None
@@ -565,19 +573,6 @@ class SqlResolver(val schema: Schema) {
         containsAggregates(opd)
       case _ => false
     }
-
-  // complex logic, not sure it's correct!
-  def matchExpr(col: Expression, alias: Option[String], exp: Expression): Boolean = {
-    col == exp || ((col, exp) match {
-      case (_, UnresolvedAttribute(None, name)) if alias == Some(name) =>
-        true
-      case (resolved: ResolvedAttribute, UnresolvedAttribute(None, name)) =>
-        resolved.name == name
-      case (UnresolvedAttribute(None, name), resolved: ResolvedAttribute) =>
-        name == resolved.name
-      case _ => false
-    })
-  }
 
   def depends(on: Operator, subquery: Operator): Boolean = subquery match {
     case Join(outer, inner, _, _) => depends(on, outer) || depends(on, inner)
