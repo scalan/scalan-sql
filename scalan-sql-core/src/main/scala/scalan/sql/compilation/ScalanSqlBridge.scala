@@ -415,13 +415,17 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   // or just construct usable names here?
   def name(column: ProjectionColumn, unnamedCounter: IntRef) =
     column.alias.getOrElse {
-      column.expr match {
-        case c: ResolvedAttribute =>
+      def name(expr: Expression): String = expr match {
+        case c: ResolvedTableAttribute =>
           c.name
+        case ResolvedProjectedAttribute(expr1, alias, _) =>
+          alias.getOrElse(name(expr1))
         case _ =>
           unnamedCounter.elem += 1
           s"_${unnamedCounter.elem}"
       }
+
+      name(column.expr)
     }
 
   def getExprType(expr: Expression): Elem[_] = {

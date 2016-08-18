@@ -379,8 +379,6 @@ object SqlAST {
   }
 
   sealed trait ResolvedAttribute extends Expression {
-    def name: String
-    def sqlType: ColumnType
     override def noParentheses = true
   }
   case class ResolvedTableAttribute(table: Table, tableId: Int, index: Int) extends ResolvedAttribute {
@@ -389,8 +387,11 @@ object SqlAST {
     val sqlType = column.ctype
     override def toString = s"[Resolved]${table.name}{$tableId}.$name"
   }
-  case class ResolvedProjectedAttribute(parent: Expression, name: String, index: Int, sqlType: ColumnType) extends ResolvedAttribute {
-    override def toString = s"[Resolved]($parent AS $name)"
+  case class ResolvedProjectedAttribute(parent: Expression, alias: Option[String], index: Int) extends ResolvedAttribute {
+    override def toString = "[Resolved]" + (alias match {
+      case None => p(parent)
+      case Some(n) => s"($parent AS $n)"
+    })
     // assert(parent.isResolved) uncomment when/if Expression.isResolved is added
   }
 

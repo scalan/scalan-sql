@@ -1,5 +1,6 @@
 package scalan.sql.parser
 
+import scala.annotation.tailrec
 import scalan.sql.parser.SqlAST._
 import scalan.util.ReflectionUtil
 
@@ -348,8 +349,8 @@ class SqlResolver(val schema: Schema) {
 
     def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
       case ResolvedTableAttribute(`table`, `id`, index) =>
-        Some(Binding(scope.name, List(Field(resolved.name))))
-      case ResolvedProjectedAttribute(parent: ResolvedAttribute, _, _, _) =>
+        Some(Binding(scope.name, List(Index(index))))
+      case ResolvedProjectedAttribute(parent: ResolvedAttribute, _, _) =>
         lookup(parent)
       case _ => None
     }
@@ -402,33 +403,38 @@ class SqlResolver(val schema: Schema) {
 
   case class ProjectContext(parent: Context, columns: List[ProjectionColumn]) extends Context {
     def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
+      val qualifier = ref.table
+      val name = ref.name
+
+      @tailrec
+      def matchColumn(expr1: Expression): Boolean = expr1 match {
+        case ResolvedProjectedAttribute(_, Some(name1), _) if name == name1 && qualifier.isEmpty =>
+          true
+        case ResolvedProjectedAttribute(parentExpr, _, _) =>
+          matchColumn(parentExpr)
+        case tableAttribute: ResolvedTableAttribute =>
+          tableAttribute.name == name && qualifier.fold(true)(_ == tableAttribute.table.name)
+        case _ => false
+      }
+
       columns.indexWhere {
-        case ProjectionColumn(col, alias) =>
-          ref match {
-            case UnresolvedAttribute(None, name) =>
-              alias == Some(name) || (col match {
-                case resolved: ResolvedAttribute => resolved.name == name
-                case _ => false
-              })
-            case _ => false
-          }
+        case ProjectionColumn(expr, alias) =>
+          (alias == Some(name) && qualifier.isEmpty) || matchColumn(expr)
       } match {
         case -1 =>
           None
         case i =>
           val saveScope = currScope
           currScope = scope.copy(ctx = parent)
-          val column = columns(i)
-          val parentExpr = column.expr
-          val cType = getExprType(parentExpr)
-          val attr = ResolvedProjectedAttribute(parentExpr, ref.name, i, cType)
+          val expr = columns(i).expr
+          val attr = ResolvedProjectedAttribute(expr, Some(ref.name), i)
           currScope = saveScope
           Some(attr)
       }
     }
 
     def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
-      case ResolvedProjectedAttribute(_, name, i, _) =>
+      case ResolvedProjectedAttribute(_, _, i) =>
         Some(Binding(scope.name, List(Index(i))))
       case _ =>
         None
@@ -443,14 +449,14 @@ class SqlResolver(val schema: Schema) {
         case -1 =>
           None
         case i =>
-          Some(ResolvedProjectedAttribute(agg, agg.toString, i, getExprType(agg)))
+          Some(ResolvedProjectedAttribute(agg, None, i))
       }
 
     override def lookup(resolved: ResolvedAttribute): Option[Binding] =
       groupedBy.indexOf(resolved) match {
         case -1 =>
           resolved match {
-            case ResolvedProjectedAttribute(agg: AggregateExpr, _, i, _) =>
+            case ResolvedProjectedAttribute(agg: AggregateExpr, _, i) =>
               val path = if (groupedBy.nonEmpty) List(Index(1), Index(i)) else List(Index(i))
               Some(Binding(scope.name, path))
             case _ => None
@@ -513,10 +519,11 @@ class SqlResolver(val schema: Schema) {
       case CastExpr(e, t) => t
       case SelectExpr(s) => DoubleType
       case FuncExpr(name, args) => funcType(name, args)
-      case attribute: ResolvedAttribute => attribute.sqlType
+      case tableAttribute: ResolvedTableAttribute => tableAttribute.sqlType
+      case ResolvedProjectedAttribute(parent, _, _) =>
+        getExprType(parent)
       case c: UnresolvedAttribute =>
-        // TODO throw an exception after SqlBridge works with resolved expressions
-        currScope.resolve(c).sqlType
+        throw new SqlException("getExprType is only called for resolved expressions")
       case _ => throw new NotImplementedError(s"getExprType($expr)")
     }
   }
