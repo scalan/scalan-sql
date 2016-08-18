@@ -29,66 +29,62 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
   }
 
   it("project and filter") {
-    testQuery(TestQuery(
+    testQuery(
       """select l_returnflag, l_linestatus
         |from lineitem
         |where l_quantity > 5
-      """.stripMargin,
-      Map("lineitem" -> Set("l_quantity", "l_returnflag", "l_linestatus")))
-    )
+      """.stripMargin)
   }
 
   it("simple aggregate") {
-    testQuery(TestQuery(
+    testQuery(
       """select
         |  sum(l_quantity) as sum_qty,
         |  avg(l_extendedprice) as avg_price
         |from lineitem
         |where
-        |  l_quantity > 5""".stripMargin,
-      Map("lineitem" -> Set("l_quantity", "l_extendedprice")))
-    )
+        |  l_quantity > 5""".stripMargin)
   }
 
   it("group by") {
-    testQuery(TestQuery(
+    testQuery(
       """select
         |    l_returnflag,
         |    sum(l_quantity) as sum_qty
         |from
         |    lineitem
         |group by
-        |    l_returnflag""".stripMargin))
+        |    l_returnflag""".stripMargin)
   }
 
   it("filter comparing columns from different tables") {
-    testQuery(TestQuery(
+    testQuery(
       """select l_orderkey
         |from orders join lineitem on l_orderkey = o_orderkey
-        |where o_orderdate < l_shipdate""".stripMargin))
+        |where o_orderdate < l_shipdate""".stripMargin)
   }
 
   // FIXME need to rework SqlResolver to handle these cases
   it("order by and filter on non-selected columns") {
     pendingUntilFixed {
-      testQuery(TestQuery(
+      testQuery(
         """select n_name from nation
           |where n_comment <> ''
-          |order by n_nationkey""".stripMargin))
+          |order by n_nationkey""".stripMargin)
     }
   }
 
   it("filter on projected columns") {
     pendingUntilFixed {
-      testQuery(TestQuery(
+      testQuery(
         """select n_regionkey + n_nationkey as key_sum from nation
           |where key_sum > 10
-          |order by key_sum""".stripMargin))
+          |order by key_sum""".stripMargin)
     }
   }
 
   it("mapReduce with empty value") {
-    testQuery(TestQuery(
+    testQuery(
       """select
         |    l_orderkey
         |from
@@ -96,15 +92,11 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
         |where
         |    o_orderdate < '1995-03-04'
         |group by
-        |    l_orderkey""".stripMargin,
-      Map(
-        "orders" -> Set("o_orderkey", "o_orderdate"),
-        "lineitem" -> Set("l_orderkey")))
-    )
+        |    l_orderkey""".stripMargin)
   }
 
   it("correlated subquery") {
-    testQuery(TestQuery(
+    testQuery(
       """select
         |    p_size
         |from
@@ -116,9 +108,7 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
         |        from
         |            lineitem
         |        where
-        |            l_partkey = p_partkey)""".stripMargin,
-      Map())
-    )
+        |            l_partkey = p_partkey)""".stripMargin)
   }
 }
 
