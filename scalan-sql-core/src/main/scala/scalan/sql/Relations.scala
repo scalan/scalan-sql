@@ -5,6 +5,7 @@ import java.lang.reflect.Method
 import scalan._
 import scalan.common.Lazy
 import scala.reflect.runtime.universe._
+import scalan.sql.parser.SqlAST.{Index, Table}
 
 trait Relations extends ScalanDsl {
   self: RelationsDsl with ScalanSql =>
@@ -90,6 +91,35 @@ trait Relations extends ScalanDsl {
     override def onlyValue(): Rep[Row] =
       advanceIter(iter)._1
   }
+
+  trait PhysicalRelation[Row] extends Relation[Row] {
+    def eRow: Elem[Row]
+  }
+
+  abstract class TableRelation[Row](val table: Rep[Table], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends PhysicalRelation[Row] {
+    override def iter = TableIter(table, scanId)
+  }
+
+  abstract class IndexRelation[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends PhysicalRelation[Row] {
+    override def iter = IndexIter(table, index, scanId)
+  }
+
+  abstract class WrapRelation[Row, Row2](val env: RRelation[Row2], val f: RFunc[Iter[Row2], Iter[Row]])(
+    implicit val eRow: Elem[Row], val eRow2: Elem[Row2]) extends Relation[Row] {
+    override def iter = f(env.iter)
+  }
+
+  // Can't currently be implemented using just Struct because incorrect code (with element[Struct]) is generated
+  // env struct contains relations, input to f contains iters with the same field names
+  abstract class WrapStructRelation[Row, EnvR <: Struct, EnvI <: Struct](val env: Rep[EnvR], val f: RFunc[EnvI, Iter[Row]])(
+    implicit val eRow: Elem[Row], eEnvR: Elem[EnvR], eEnvI: Elem[EnvI]) extends Relation[Row] {
+    override def iter = {
+      val itersEnv = env.mapFields {
+        case rel: RRelation[a] @unchecked => rel.iter
+      }.asRep[EnvI]
+      f(itersEnv)
+    }
+  }
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.
@@ -107,10 +137,12 @@ trait RelationsDsl extends impl.RelationsAbs { self: ScalanSql =>
 //    def map[A:Elem,B:Elem](xs: Rep[Relation[A]])(f: Rep[A] => Rep[B]) = xs.map(fun(f))
 //  }
 //  implicit val RelationContainer: Functor[Relation] = new RelationFunctor {}
-
   implicit def RelationElemExtensions[A](ie: Elem[Relation[A]]) = ie.asInstanceOf[RelationElem[A, Relation[A]]]
 
   def iterBasedRelation[A](iter: RIter[A]) = IterBasedRelation(iter)(iter.selfType1.eRow)
+
+  def wrapStructRelation[A](env: Rep[Struct], f: RFunc[Struct, Iter[A]]): Rep[WrapStructRelation[A, Struct, Struct]] =
+    ???
 }
 
 trait RelationsDslStd extends impl.RelationsStd { self: ScalanSqlStd =>
@@ -195,6 +227,14 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
       }
     case _ =>
       super.getResultElem(receiver, m, args)
+  }
+
+  override def wrapStructRelation[A](env: Rep[Struct], f: RFunc[Struct, Iter[A]]) = {
+    val eEnvR = env.elem
+    val eF = f.elem
+    val eEnvI = eF.eDom
+    val eRow = eF.eRange.eRow
+    WrapStructRelation[A, Struct, Struct](env, f)(eRow, eEnvR, eEnvI)
   }
 //
 //  override def rewriteDef[T](d: Def[T]): Exp[_] = { import KeyPath._; d match {

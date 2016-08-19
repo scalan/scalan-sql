@@ -5,6 +5,7 @@ import java.lang.reflect.Method
 import scalan._
 import scalan.common.Lazy
 import scala.reflect.runtime.universe._
+import scalan.sql.parser.SqlAST.{Index, Table}
 
 trait Iters extends ScalanDsl {
   self: ItersDsl with ScalanSql =>
@@ -61,9 +62,14 @@ trait Iters extends ScalanDsl {
     def empty[Row: Elem]: Rep[Iter[Row]] = externalMethod("IterCompanion", "empty")
   }
 
-  abstract class TableIter[Row]()(implicit val eRow: Elem[Row], val tableName: SingletonElem[String]) extends Iter[Row]
+  trait CursorIter[Row] extends Iter[Row] {
+    def eRow: Elem[Row]
+  }
 
-  abstract class IndexIter[Row]()(implicit val eRow: Elem[Row], val indexName: SingletonElem[String]) extends Iter[Row]
+  abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
+
+  // TODO how to distinguish covering indices?
+  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.

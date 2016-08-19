@@ -3,7 +3,7 @@ package scalan.sql
 import java.sql.{Date, Time, Timestamp}
 
 import scalan._
-import scalan.sql.parser.SqlAST.{Expression, Operator}
+import scalan.sql.parser.SqlAST.{Expression, Index, Operator, Table}
 
 /**
   * Use this traits for the top level scalan.sql extensions, customizations and overrides
@@ -36,8 +36,10 @@ trait ScalanSql extends ScalanDsl with ItersDsl with RelationsDsl {
 
   val QueryTextKey = MetaKey[String]("queryText")
 
-  private implicit val sqlOperatorElem = new BaseElem[Operator](null)
-  private implicit val sqlExpressionElem = new BaseElem[Expression](null)
+  implicit val sqlOperatorElem = new BaseElem[Operator](null)
+  implicit val sqlExpressionElem = new BaseElem[Expression](null)
+  implicit val tableElem = new BaseElem[Table](null)
+  implicit val indexElem = new BaseElem[Index](null)
   val SqlOperatorKey = MetaKey[Operator]("sql-origin-operator")
   val SqlExpressionKey = MetaKey[Expression]("sql-origin-expression")
 
