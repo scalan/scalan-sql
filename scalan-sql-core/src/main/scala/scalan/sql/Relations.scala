@@ -92,16 +92,8 @@ trait Relations extends ScalanDsl {
       advanceIter(iter)._1
   }
 
-  trait PhysicalRelation[Row] extends Relation[Row] {
-    def eRow: Elem[Row]
-  }
-
-  abstract class TableRelation[Row](val table: Rep[Table], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends PhysicalRelation[Row] {
-    override def iter = TableIter(table, scanId)
-  }
-
-  abstract class IndexRelation[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends PhysicalRelation[Row] {
-    override def iter = IndexIter(table, index, scanId)
+  abstract class PhysicalRelation[Row](val source: RScannable[Row])(implicit val eRow: Elem[Row]) extends Relation[Row] {
+    override def iter = delayInvoke
   }
 
   abstract class WrapRelation[Row, Row2](val env: RRelation[Row2], val f: RFunc[Iter[Row2], Iter[Row]])(

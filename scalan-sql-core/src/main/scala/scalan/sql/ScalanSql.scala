@@ -8,7 +8,7 @@ import scalan.sql.parser.SqlAST.{Expression, Index, Operator, Table}
 /**
   * Use this traits for the top level scalan.sql extensions, customizations and overrides
   */
-trait ScalanSql extends ScalanDsl with ItersDsl with RelationsDsl {
+trait ScalanSql extends ScalanDsl with ScannablesDsl with ItersDsl with RelationsDsl {
   implicit val DateElement: Elem[Date] = new BaseElem(new Date(0))
   implicit val DateOrdering: Ordering[Date] = Ordering.by(_.getTime)
 
@@ -57,10 +57,10 @@ trait ScalanSql extends ScalanDsl with ItersDsl with RelationsDsl {
   def pack[A](x: Rep[A]): Rep[String]
 }
 
-trait ScalanSqlStd extends ScalanDslStd with ItersDslStd with RelationsDslStd with ScalanSql {
+trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with ItersDslStd with RelationsDslStd with ScalanSql {
   override def pack[A](x: A): String = x.toString
 }
-trait ScalanSqlExp extends ScalanDslExp with ItersDslExp with RelationsDslExp with ScalanSql with SqlSlicing {
+trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with ItersDslExp with RelationsDslExp with ScalanSql with SqlSlicing {
   def toPlatformString[A](x: Rep[A]): Rep[String] = ToString1[A]()(x)
   case class ToString1[A]() extends UnOp[A, String]("toPlatformString", _.toString)
 
