@@ -66,7 +66,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
 
     val eInput = structElement(inputRowElems.map {
-      case (name, eRow) => (name, funcElement(IntElement, relationElement(eRow)))
+      case (name, eRow) => (name, scannableElement(eRow))
     } :+ fakeDepField)
     val resultRelationFun = inferredFun(eInput) { x =>
       val tableScopes = tables.map {
@@ -200,9 +200,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
       val fieldName = scanIterName(s)
 
+      val table = resolver.table(s.tableName)
       val candidateIndices = inputs.candidateIndices(s)
-      inputs(fieldName).asInstanceOf[RFunc[Int, Relation[_]]](fakeDep).
-        setMetadata(CandidateIndicesKey)(candidateIndices)
+      val scannable = inputs(fieldName).asInstanceOf[RScannable[_]].
+        setMetadata(CandidateIndicesKey)((table -> candidateIndices) -> s.id)
+      val baseRelation = physicalRelation(scannable)
+      // fakeDep unused for now?
+      baseRelation
     case OrderBy(p, by) =>
       val inputs1 = inputs.orderByInfo(by)
       generateOperator(p, inputs1) match {

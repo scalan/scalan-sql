@@ -133,6 +133,8 @@ trait RelationsDsl extends impl.RelationsAbs { self: ScalanSql =>
 
   def iterBasedRelation[A](iter: RIter[A]) = IterBasedRelation(iter)(iter.selfType1.eRow)
 
+  def physicalRelation[A](source: RScannable[A]) = PhysicalRelation(source)(source.selfType1.eRow)
+
   def wrapStructRelation[A](env: Rep[Struct], f: RFunc[Struct, Iter[A]]): Rep[WrapStructRelation[A, Struct, Struct]] =
     ???
 }

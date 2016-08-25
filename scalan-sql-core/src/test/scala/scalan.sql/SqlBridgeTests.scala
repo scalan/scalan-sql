@@ -2,7 +2,7 @@ package scalan.sql
 
 import scalan.BaseNestedTests
 import scalan.compilation.GraphVizConfig
-import scalan.sql.compilation.{RelationToIterBridge, ScalanSqlBridge}
+import scalan.sql.compilation.{RelationConcretizer, RelationToIterBridge, ScalanSqlBridge}
 import scalan.sql.parser.{SqlResolver, SqliteResolver}
 
 abstract class AbstractSqlBridgeTests extends BaseNestedTests {
@@ -133,6 +133,21 @@ class IterSqlBridgeTests extends AbstractSqlBridgeTests {
       case relExp: RFunc[Struct, Relation[a]] =>
         val iterExp = iterBridge.relationFunToIterFun(relExp)
         scalan.emitDepGraph(iterExp, prefix, currentTestNameAsFileName)(GraphVizConfig.default)
+    }
+  }
+}
+
+class RelationConcretizerTests extends AbstractSqlBridgeTests {
+  def testQuery(query: TestQuery) = {
+    val scalan = new ScalanSqlExp {}
+    import scalan._
+    val bridge = tpchBridge(scalan)
+    val concretizer = new RelationConcretizer[scalan.type](bridge)
+
+    bridge.sqlQueryExp(query.sql) match {
+      case relExp: RFunc[Struct, Relation[a]] =>
+        val plans = concretizer.concretePlans(relExp)
+        scalan.emitDepGraph(plans, prefix, currentTestNameAsFileName)(GraphVizConfig.default)
     }
   }
 }
