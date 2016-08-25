@@ -19,11 +19,26 @@ class SqlParser {
       case CreateTableStmt(t) => (t.name, t)
     }.toMap
 
-    val indices = script.collect {
-      case CreateIndexStmt(i) => i
-    }.groupBy(_.tableName)
+    val primaryKeyIndices = tables.flatMap {
+      case (name, Table(_, columns, constraints, _)) =>
+        val pkColumns = constraints.collectFirst {
+          case PrimaryKeyT(pkColumns, _) =>
+            pkColumns
+        }.orElse(columns.flatMap {
+          case Column(name, _, constraints) =>
+            constraints.collect { case PrimaryKeyC(direction, _, _) => List(IndexedColumn(name, "", direction)) }
+        }.headOption)
 
-    Schema(tables, indices)
+        pkColumns.map(Index(s"${name}_pk", name, _, isUnique = true, isPrimaryKey = true))
+    }
+
+    val otherIndices = script.collect {
+      case CreateIndexStmt(i) => i
+    }
+
+    val indicesByTable = (primaryKeyIndices ++ otherIndices).groupBy(_.tableName).map { case (k, v) => (k, v.toList) }
+
+    Schema(tables, indicesByTable)
   }
 
   def parseSelect(sql: String) = grammar.select(sql)
@@ -262,7 +277,7 @@ class SqlParser {
 
     lazy val createIndexStmt: Parser[Statement] =
       (CREATE ~> UNIQUE.? <~ INDEX <~ (IF ~ NOT ~ EXISTS).?) ~ ident ~ (ON ~> ident) ~ indexedColumnList ^^ {
-        case u ~ name ~ tableName ~ key => CreateIndexStmt(Index(name, tableName, key, u.isDefined))
+        case u ~ name ~ tableName ~ key => CreateIndexStmt(Index(name, tableName, key, u.isDefined, false))
       }
 
     // fieldType is optional in SQLite only

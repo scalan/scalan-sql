@@ -38,7 +38,7 @@ object SqlAST {
       }
     }
   }
-  case class Index(name: String, tableName: String, columns: List[IndexedColumn], isUnique: Boolean)
+  case class Index(name: String, tableName: String, columns: List[IndexedColumn], isUnique: Boolean, isPrimaryKey: Boolean)
 
   case class Schema(tables: Map[String, Table], indicesByName: Map[String, List[Index]]) {
     def table(name: String) =
