@@ -43,4 +43,10 @@ trait ScannablesDslExp extends impl.ScannablesExp { self: ScalanSqlExp =>
     case _ =>
       super.getResultElem(receiver, m, args)
   }
+
+  override def formatConst(x: Any) = x match {
+    case x: Table => s"Table ${x.name}"
+    case x: Index => s"Index ${x.name} ON ${x.tableName}"
+    case _ => super.formatConst(x)
+  }
 }
