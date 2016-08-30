@@ -9,7 +9,8 @@ object SqlBoilerplateTool extends BoilerplateTool {
     entityFiles = List(
       "scalan/sql/Iters.scala",
       "scalan/sql/Relations.scala",
-      "scalan/sql/Scannables.scala"
+      "scalan/sql/Scannables.scala",
+      "scalan/sql/Databases.scala"
     ),
     baseContextTrait = "Scalan",
     seqContextTrait = "ScalanStd",
