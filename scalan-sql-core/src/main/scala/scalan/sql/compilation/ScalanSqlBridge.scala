@@ -92,6 +92,102 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case _ => Iterator.empty
   }
 
+  def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = ((op match {
+    case s: Scan =>
+      generateScan(inputs, s)
+    case Join(outer, inner, joinType, joinSpec) =>
+      generateJoin(outer, inner, joinType, joinSpec, inputs)
+    case Aggregate(p, groupedBy, aggregates) =>
+      val inputs1 = inputs.groupByInfo(groupedBy)
+      generateOperator(p, inputs1) match {
+        case pExp: RRelation[a] @unchecked =>
+          withContext(p) {
+            generateAggregate(aggregates, groupedBy, pExp, inputs1)
+          }
+      }
+    case Filter(p, predicate) =>
+      val inputs1 = inputs.addConstraints(predicate)
+      generateOperator(p, inputs1) match {
+        case joinsExp: RRelation[a] @unchecked =>
+          val eRow = joinsExp.elem.eRow
+          joinsExp.filter(generateLambdaExpr(p, predicate, inputs1)(eRow).asRep[a => Boolean])
+      }
+    case Project(p, columns) =>
+      withContext(p) {
+        generateOperator(p, inputs) match {
+          case pExp: RRelation[a] @unchecked =>
+            assert(!columns.exists(resolver.containsAggregates),
+              "Aggregate columns in Project must be handled by SqlResolver")
+            val structLambda = generateStructLambdaExpr(p, columns, inputs)(pExp.elem.eRow).asRep[a => Any]
+            pExp.map(structLambda)
+        }
+      }
+    case OrderBy(p, by) =>
+      val inputs1 = inputs.orderByInfo(by)
+      generateOperator(p, inputs1) match {
+        case pExp: RRelation[a] @unchecked =>
+          val eRow = pExp.elem.eRow
+          val comparator = generateComparator(p, by, inputs1)(eRow)
+          pExp.sort(comparator)
+      }
+    case TableAlias(operator, alias) =>
+      generateOperator(operator, inputs)
+    case SubSelect(p) =>
+      generateOperator(p, inputs)
+    case _ =>
+      ???(s"Failed to construct Scalan graph from SQL AST $op")
+  }): Exp[Relation[_]]).setMetadata(SqlOperatorKey)(op)
+
+  private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
+    def findInput(scope: resolver.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
+      scope.outer match {
+        case None =>
+          !!!("Current lambda argument not found, should never happen")
+        case Some(scope1) =>
+          findInput(scope1)
+      }
+    })
+    findInput(resolver.currScope)
+  }
+
+  def generateScan(inputs: ExprInputs, s: Scan): Exp[PhysicalRelation[_]] = {
+    def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
+      case se: StructElem[_] =>
+        val x1 = x.asRep[Struct]
+        if (se.fields.exists(_._1 == FakeDepName)) {
+          Some(x1.get[Int](FakeDepName))
+        } else {
+          val relation = se.fields.iterator.map {
+            case (name, _) => findFakeDep(x1.getUntyped(name))
+          }.filter(_.isDefined)
+          if (relation.hasNext)
+            relation.next()
+          else
+            None
+        }
+      case PairElem(eFst: Elem[a], eSnd: Elem[b]) =>
+        val x1 = x.asRep[(a, b)]
+        findFakeDep(x1._1).orElse(findFakeDep(x1._2))
+      case _ =>
+        None
+    }
+
+    val currentLambdaArg = this.currentLambdaArg(inputs)
+    val fakeDep = findFakeDep(currentLambdaArg).getOrElse {
+      !!!(s"Can't find $FakeDepName in ${currentLambdaArg.toStringWithType}")
+    }
+
+    val fieldName = scanIterName(s)
+
+    val table = resolver.table(s.tableName)
+    val candidateIndices = inputs.candidateIndices(s)
+    val scannable = inputs(fieldName).asInstanceOf[RScannable[_]].
+      setMetadata(CandidateIndicesKey)((table -> candidateIndices) -> s.id)
+    val baseRelation = physicalRelation(scannable)
+    // fakeDep unused for now?
+    baseRelation
+  }
+
   def generateJoin(outer: Operator, inner: Operator, joinType: JoinType, joinSpec: JoinSpec, inputs: ExprInputs) = {
     joinSpec match {
       case On(condition) =>
@@ -166,98 +262,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       case _ =>
         !!!(s"Join spec $joinSpec after resolver")
     }
-  }
-
-  def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = ((op match {
-    case Join(outer, inner, joinType, joinSpec) =>
-      generateJoin(outer, inner, joinType, joinSpec, inputs)
-    case s: Scan =>
-      def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
-        case se: StructElem[_] =>
-          val x1 = x.asRep[Struct]
-          if (se.fields.exists(_._1 == FakeDepName)) {
-            Some(x1.get[Int](FakeDepName))
-          } else {
-            val relation = se.fields.iterator.map {
-              case (name, _) => findFakeDep(x1.getUntyped(name))
-            }.filter(_.isDefined)
-            if (relation.hasNext)
-              relation.next()
-            else
-              None
-          }
-        case PairElem(eFst: Elem[a], eSnd: Elem[b]) =>
-          val x1 = x.asRep[(a, b)]
-          findFakeDep(x1._1).orElse(findFakeDep(x1._2))
-        case _ =>
-          None
-      }
-
-      val currentLambdaArg = this.currentLambdaArg(inputs)
-      val fakeDep = findFakeDep(currentLambdaArg).getOrElse {
-        !!!(s"Can't find $FakeDepName in ${currentLambdaArg.toStringWithType}")
-      }
-
-      val fieldName = scanIterName(s)
-
-      val table = resolver.table(s.tableName)
-      val candidateIndices = inputs.candidateIndices(s)
-      val scannable = inputs(fieldName).asInstanceOf[RScannable[_]].
-        setMetadata(CandidateIndicesKey)((table -> candidateIndices) -> s.id)
-      val baseRelation = physicalRelation(scannable)
-      // fakeDep unused for now?
-      baseRelation
-    case OrderBy(p, by) =>
-      val inputs1 = inputs.orderByInfo(by)
-      generateOperator(p, inputs1) match {
-        case pExp: RRelation[a] @unchecked =>
-          val eRow = pExp.elem.eRow
-          val comparator = generateComparator(p, by, inputs1)(eRow)
-          pExp.sort(comparator)
-      }
-    case Aggregate(p, groupedBy, aggregates) =>
-      val inputs1 = inputs.groupByInfo(groupedBy)
-      generateOperator(p, inputs1) match {
-        case pExp: RRelation[a] @unchecked =>
-          withContext(p) {
-            generateAggregate(aggregates, groupedBy, pExp, inputs1)
-          }
-      }
-    case Filter(p, predicate) =>
-      val inputs1 = inputs.addConstraints(predicate)
-      generateOperator(p, inputs1) match {
-        case joinsExp: RRelation[a] @unchecked =>
-          val eRow = joinsExp.elem.eRow
-          joinsExp.filter(generateLambdaExpr(p, predicate, inputs1)(eRow).asRep[a => Boolean])
-      }
-    case Project(p, columns) =>
-      withContext(p) {
-        generateOperator(p, inputs) match {
-          case pExp: RRelation[a] @unchecked =>
-            assert(!columns.exists(resolver.containsAggregates),
-              "Aggregate columns in Project must be handled by SqlResolver")
-            val structLambda = generateStructLambdaExpr(p, columns, inputs)(pExp.elem.eRow).asRep[a => Any]
-            pExp.map(structLambda)
-        }
-      }
-    case TableAlias(operator, alias) =>
-      generateOperator(operator, inputs)
-    case SubSelect(p) =>
-      generateOperator(p, inputs)
-    case _ =>
-      ???(s"Failed to construct Scalan graph from SQL AST $op")
-  }): Exp[Relation[_]]).setMetadata(SqlOperatorKey)(op)
-
-  private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
-    def findInput(scope: resolver.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
-      scope.outer match {
-        case None =>
-          !!!("Current lambda argument not found, should never happen")
-        case Some(scope1) =>
-          findInput(scope1)
-      }
-    })
-    findInput(resolver.currScope)
   }
 
   def generateAggregate[Row](aggregates: List[AggregateExpr], groupedBy: List[Expression], pExp: Exp[Relation[Row]], inputs: ExprInputs) = {
