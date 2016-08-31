@@ -213,11 +213,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           !!!("Non-inner joins are not supported yet")
         }
 
-        val inputs1 = inputs.addConstraints(condition)
-        (generateOperator(outer, inputs1), generateOperator(inner, inputs1)) match {
-          case (outerPlans: Plans[a] @unchecked, innerPlans: Plans[b] @unchecked) =>
+        val inputs1 = inputs.withoutOrderAndGroupInfo
+        val hashJoins = (generateOperator(outer, inputs), bestPlan(inner, inputs1)) match {
+          case (outerPlans: Plans[a] @unchecked, innerExp: RRelation[b] @unchecked) =>
             val outerRowElem = eRow(outerPlans)
-            val innerRowElem = eRow(innerPlans)
+            val innerRowElem = innerExp.elem.eRow
 
             val (outerJoinColumns, innerJoinColumns) =
               withContext(outer) {
@@ -237,54 +237,83 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                           if (bindingR.scope == InnerScopeName)
                             List((l, r))
                           else
-                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans ++ innerPlans): _*)
+                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerExp): _*)
                         case InnerScopeName =>
                           if (bindingR.scope == OuterScopeName)
                             List((r, l))
                           else
-                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans ++ innerPlans): _*)
+                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerExp): _*)
                         case _ =>
-                          !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", (outerPlans ++ innerPlans): _*)
+                          !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", (outerPlans :+ innerExp): _*)
                       }
                     case _ =>
-                      !!!(s"Unsupported join condition: $cond", (outerPlans ++ innerPlans): _*)
+                      !!!(s"Unsupported join condition: $cond", (outerPlans :+ innerExp): _*)
                   }
 
                   columns(condition).unzip
                 }
               }
 
-              def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
-                withContext(op) {
-                  def column(column: ResolvedAttribute) =
-                    ExprInputs(currentScopeName -> x).resolveColumn(column)
+            def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
+              withContext(op) {
+                def column(column: ResolvedAttribute) =
+                  ExprInputs(currentScopeName -> x).resolveColumn(column)
 
-                  columns match {
-                    case Seq() =>
-                      !!!(s"Join using empty column list", (outerPlans ++ innerPlans): _*)
-                    case Seq(col) =>
-                      column(col)
-                    case _ =>
-                      val fields = columns.map(column _)
-                      tupleStruct(fields: _*)
-                  }
+                columns match {
+                  case Seq() =>
+                    !!!(s"Join using empty column list", (outerPlans :+ innerExp): _*)
+                  case Seq(col) =>
+                    column(col)
+                  case _ =>
+                    val fields = columns.map(column _)
+                    tupleStruct(fields: _*)
                 }
               }
+            }
 
-              val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
-              val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
-              if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
-                !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
-                  (outerPlans ++ innerPlans :+ outerKeyFun :+ innerKeyFun): _*)
-              }
+            val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
+            val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
+            if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
+              !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
+                (outerPlans :+ innerExp :+ outerKeyFun :+ innerKeyFun): _*)
+            }
 
-              for {
-                outerExp <- outerPlans
-                innerExp <- innerPlans
-              } yield {
-                outerExp.join(innerExp, outerKeyFun, innerKeyFun)
-              }
+            outerPlans.map(_.hashJoin(innerExp, outerKeyFun, innerKeyFun, leftIsOuter = true))
         }
+
+        // should all plans be used, or just best plan?
+        def generateNestedLoopJoins(outer0: Operator, inner0: Operator, flip: Boolean) =
+          generateOperator(outer0, inputs).map {
+            case outerExp: RRelation[a] @unchecked =>
+              val outerRowElem = outerExp.elem.eRow
+
+              withContext(outer0) {
+                val f = inferredFun(outerRowElem) { x =>
+                  val inputs1 = (inputs + (currentScopeName -> x)).withoutOrderAndGroupInfo
+
+                  val inner1 = Filter(inner0, condition)
+
+                  bestPlan(inner1, inputs1) match {
+                    case innerExp: RRelation[b] @unchecked =>
+                      val innerRowElem = innerExp.elem.eRow
+
+                      val g = inferredFun(innerRowElem) { y =>
+                        val mapped: Exp[_] = if (flip) (y, x) else (x, y)
+                        mapped
+                      }
+
+                      innerExp.map(g)
+                  }
+                }
+
+                outerExp.flatMap(f)
+              }
+          }
+
+        val outerNestedLoopJoins = generateNestedLoopJoins(outer, inner, false)
+        val innerNestedLoopJoins = generateNestedLoopJoins(inner, outer, true)
+
+        hashJoins ++ outerNestedLoopJoins ++ innerNestedLoopJoins
       case _ =>
         !!!(s"Join spec $joinSpec after resolver")
     }
@@ -645,6 +674,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       val tableAttributes = expressions.flatMap(resolver.underlyingTableColumn).toSet
       copy(columnUseInfo = columnUseInfo.copy(groupBy = tableAttributes))
     }
+
+    def withoutOrderAndGroupInfo =
+      copy(columnUseInfo = columnUseInfo.copy(orderBy = Nil, groupBy = Set.empty))
 
     // TODO inline
     def resolveColumn(c: ResolvedAttribute) = {
