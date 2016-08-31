@@ -16,9 +16,9 @@ trait Scannables extends ScalanDsl {
     def fullScan(direction: SortDirection): RIter[Row] = delayInvoke
   }
 
-  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row]
+  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row]
 
-  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
     def search[Key](numColumns: Int, lowerBound: Option[Bound[Key]], upperBound: Option[Bound[Key]], direction: SortDirection): RIter[Row] = delayInvoke
   }
 }

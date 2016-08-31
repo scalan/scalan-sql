@@ -74,13 +74,23 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
       val scopes = tableScopes :+ (currentScopeName -> x)
       val inputs = ExprInputs(scopes: _*)
-      generateOperator(resolved, inputs)
+      val finalPlan: Exp[Relation[_]] = bestPlan(resolved, inputs)
+      finalPlan
     }
     // could return a struct instead of adding metadate, function is easier to pass to compiler for now
     resultRelationFun.setMetadata(QueryTextKey)(query)
 
     resultRelationFun
   }
+
+  def bestPlan(operator: Operator, inputs: ExprInputs) = {
+    val allPlans = generateOperator(operator, inputs)
+    val bestPlan = selectBestPlan(allPlans)
+    bestPlan
+  }
+
+  // TODO plans should include cost
+  def selectBestPlan[A](plans: Plans[A]) = plans.head
 
   def scanIterName(s: Scan) = s"${s.tableName}{${s.id}}"
 
@@ -92,29 +102,35 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case _ => Iterator.empty
   }
 
-  def generateOperator(op: Operator, inputs: ExprInputs): Exp[Relation[_]] = ((op match {
+  // there is at least one plan for any operator by construction, so calling `head` below should be safe
+  type Plans[A] = List[Exp[Relation[A]]]
+
+  def eRow[A](plans: Plans[A]) = plans.head.elem.eRow
+
+  def generateOperator(op: Operator, inputs: ExprInputs): Plans[_] = ((op match {
     case s: Scan =>
       generateScan(inputs, s)
     case Join(outer, inner, joinType, joinSpec) =>
       generateJoin(outer, inner, joinType, joinSpec, inputs)
     case Aggregate(p, groupedBy, aggregates) =>
       val inputs1 = inputs.groupByInfo(groupedBy)
-      generateOperator(p, inputs1) match {
+      generateOperator(p, inputs1).map {
         case pExp: RRelation[a] @unchecked =>
           withContext(p) {
             generateAggregate(aggregates, groupedBy, pExp, inputs1)
           }
       }
     case Filter(p, predicate) =>
+      // TODO pushdown filter into flatmapped joins
       val inputs1 = inputs.addConstraints(predicate)
-      generateOperator(p, inputs1) match {
+      generateOperator(p, inputs1).map {
         case joinsExp: RRelation[a] @unchecked =>
           val eRow = joinsExp.elem.eRow
           joinsExp.filter(generateLambdaExpr(p, predicate, inputs1)(eRow).asRep[a => Boolean])
       }
     case Project(p, columns) =>
       withContext(p) {
-        generateOperator(p, inputs) match {
+        generateOperator(p, inputs).map {
           case pExp: RRelation[a] @unchecked =>
             assert(!columns.exists(resolver.containsAggregates),
               "Aggregate columns in Project must be handled by SqlResolver")
@@ -124,7 +140,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
     case OrderBy(p, by) =>
       val inputs1 = inputs.orderByInfo(by)
-      generateOperator(p, inputs1) match {
+      generateOperator(p, inputs1).map {
         case pExp: RRelation[a] @unchecked =>
           val eRow = pExp.elem.eRow
           val comparator = generateComparator(p, by, inputs1)(eRow)
@@ -136,7 +152,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       generateOperator(p, inputs)
     case _ =>
       ???(s"Failed to construct Scalan graph from SQL AST $op")
-  }): Exp[Relation[_]]).setMetadata(SqlOperatorKey)(op)
+  }).asInstanceOf[Plans[_]]).map(_.setMetadata(SqlOperatorKey)(op))
 
   private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
     def findInput(scope: resolver.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
@@ -150,7 +166,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     findInput(resolver.currScope)
   }
 
-  def generateScan(inputs: ExprInputs, s: Scan): Exp[PhysicalRelation[_]] = {
+  def generateScan(inputs: ExprInputs, s: Scan): Plans[_] = {
     def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
       case se: StructElem[_] =>
         val x1 = x.asRep[Struct]
@@ -177,25 +193,31 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       !!!(s"Can't find $FakeDepName in ${currentLambdaArg.toStringWithType}")
     }
 
-    val fieldName = scanIterName(s)
-
-    val table = resolver.table(s.tableName)
+    val tableName = s.tableName
+    val table = resolver.table(tableName)
     val candidateIndices = inputs.candidateIndices(s)
-    val scannable = inputs(fieldName).asInstanceOf[RScannable[_]].
-      setMetadata(CandidateIndicesKey)((table -> candidateIndices) -> s.id)
-    val baseRelation = physicalRelation(scannable)
-    // fakeDep unused for now?
-    baseRelation
+    val eRow = tableElems(tableName)
+
+    val scanId = s.id
+    // TODO connect to inputs (take DB as argument?)
+    val scannables = TableScannable(table, scanId, fakeDep)(eRow) +:
+      candidateIndices.map(index => IndexScannable(table, index, scanId, fakeDep)(eRow))
+
+    scannables.map(physicalRelation)
   }
 
   def generateJoin(outer: Operator, inner: Operator, joinType: JoinType, joinSpec: JoinSpec, inputs: ExprInputs) = {
     joinSpec match {
       case On(condition) =>
+        if (joinType != Inner) {
+          !!!("Non-inner joins are not supported yet")
+        }
+
         val inputs1 = inputs.addConstraints(condition)
         (generateOperator(outer, inputs1), generateOperator(inner, inputs1)) match {
-          case (outerExp: RRelation[a] @unchecked, innerExp: RRelation[b] @unchecked) =>
-            val outerRowElem = outerExp.elem.eRow
-            val innerRowElem = innerExp.elem.eRow
+          case (outerPlans: Plans[a] @unchecked, innerPlans: Plans[b] @unchecked) =>
+            val outerRowElem = eRow(outerPlans)
+            val innerRowElem = eRow(innerPlans)
 
             val (outerJoinColumns, innerJoinColumns) =
               withContext(outer) {
@@ -203,6 +225,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 withContext(inner) {
                   val InnerScopeName = currentScopeName
 
+                  // TODO this should return Option; if None, hashJoin can't be used
                   def columns(cond: Expression): List[(ResolvedAttribute, ResolvedAttribute)] = cond match {
                     case BinOpExpr(SqlAST.And, l, r) =>
                       columns(l) ++ columns(r)
@@ -214,50 +237,53 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                           if (bindingR.scope == InnerScopeName)
                             List((l, r))
                           else
-                            !!!(s"$l and $r must be columns on opposing join sides", outerExp, innerExp)
+                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans ++ innerPlans): _*)
                         case InnerScopeName =>
                           if (bindingR.scope == OuterScopeName)
                             List((r, l))
                           else
-                            !!!(s"$l and $r must be columns on opposing join sides", outerExp, innerExp)
+                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans ++ innerPlans): _*)
                         case _ =>
-                          !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", outerExp, innerExp)
+                          !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", (outerPlans ++ innerPlans): _*)
                       }
                     case _ =>
-                      !!!(s"Unsupported join condition: $cond", outerExp, innerExp)
+                      !!!(s"Unsupported join condition: $cond", (outerPlans ++ innerPlans): _*)
                   }
 
                   columns(condition).unzip
                 }
               }
 
-            def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
-              withContext(op) {
-                def column(column: ResolvedAttribute) =
-                  ExprInputs(currentScopeName -> x).resolveColumn(column)
+              def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
+                withContext(op) {
+                  def column(column: ResolvedAttribute) =
+                    ExprInputs(currentScopeName -> x).resolveColumn(column)
 
-                columns match {
-                  case Seq() =>
-                    !!!(s"Join using empty column list", outerExp, innerExp)
-                  case Seq(col) =>
-                    column(col)
-                  case _ =>
-                    val fields = columns.map(column _)
-                    tupleStruct(fields: _*)
+                  columns match {
+                    case Seq() =>
+                      !!!(s"Join using empty column list", (outerPlans ++ innerPlans): _*)
+                    case Seq(col) =>
+                      column(col)
+                    case _ =>
+                      val fields = columns.map(column _)
+                      tupleStruct(fields: _*)
+                  }
                 }
               }
-            }
 
-            val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
-            val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
-            if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
-              !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
-                outerExp, innerExp, outerKeyFun, innerKeyFun)
-            }
-            if (joinType != Inner) {
-              !!!("Non-inner joins are not supported yet", outerExp, innerExp)
-            }
-            outerExp.join(innerExp, outerKeyFun, innerKeyFun)
+              val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
+              val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
+              if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
+                !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
+                  (outerPlans ++ innerPlans :+ outerKeyFun :+ innerKeyFun): _*)
+              }
+
+              for {
+                outerExp <- outerPlans
+                innerExp <- innerPlans
+              } yield {
+                outerExp.join(innerExp, outerKeyFun, innerKeyFun)
+              }
         }
       case _ =>
         !!!(s"Join spec $joinSpec after resolver")
@@ -715,7 +741,7 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
           - opdExp
       }
     case ExistsExpr(q) =>
-      generateOperator(q, inputs) match {
+      bestPlan(q, inputs) match {
         case qExp: RRelation[a] @unchecked =>
           !qExp.isEmpty
       }
@@ -752,7 +778,7 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
           }
       }
     case SelectExpr(s) =>
-      generateOperator(s, inputs)
+      bestPlan(s, inputs)
     case SubstrExpr(str, from, len) =>
       val strExp = generateExpr(str, inputs).asRep[String]
       val fromExp = generateExpr(from, inputs).asRep[Int]
@@ -765,7 +791,7 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       list.map(x => exprExp === generateExpr(x, inputs)).reduce(_ || _)
     case InExpr(expr, query) =>
       val exprExp = generateExpr(expr, inputs)
-      generateOperator(query, inputs) match {
+      bestPlan(query, inputs) match {
         case queryExp: RRelation[a] @unchecked =>
           val f = inferredFun(queryExp.elem.eRow) { _.asRep[Any] === exprExp }
           !queryExp.filter(f).isEmpty

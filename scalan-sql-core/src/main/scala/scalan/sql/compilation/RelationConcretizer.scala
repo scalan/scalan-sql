@@ -21,29 +21,29 @@ class RelationConcretizer[+S <: ScalanSqlExp](val bridge: ScalanSqlBridge[S]) {
         (name, field) :: tailFields
   }
 
-  def concretePlans[A](f: RFunc[Struct, Relation[A]]) = f match {
-    case Def(l: Lambda[in, _]) =>
-      val inputVar = l.x.asRep[Struct]
-      val allCandidateFields: List[(String, List[Rep[_]])] = inputVar.fields.map {
-        case (FakeDepName, _) =>
-          FakeDepName -> List(toRep(0))
-        case (name, field) =>
-          field.elem match {
-            case elem: ScannableElem[r, _] =>
-
-              val eRow = elem.eRow
-              val ((table, candidateIndices), scanId) = field.getMetadata(CandidateIndicesKey).get
-              val candidateScannables =
-                TableScannable(table, scanId)(eRow) +: candidateIndices.map(index => IndexScannable(table, index, scanId)(eRow))
-              (name, candidateScannables)
-          }
-      }.toList
-
-      val candidateFieldCombinations = allFieldCombinations(allCandidateFields)
-
-      candidateFieldCombinations.map { fields =>
-        val inputStruct = struct(fields)
-        f(inputStruct)
-      }
-  }
+  def concretePlans[A](f: RFunc[Struct, Relation[A]]) = f // match {
+//    case Def(l: Lambda[in, _]) =>
+//      val inputVar = l.x.asRep[Struct]
+//      val allCandidateFields: List[(String, List[Rep[_]])] = inputVar.fields.map {
+//        case (FakeDepName, _) =>
+//          FakeDepName -> List(toRep(0))
+//        case (name, field) =>
+//          field.elem match {
+//            case elem: ScannableElem[r, _] =>
+//
+//              val eRow = elem.eRow
+//              val ((table, candidateIndices), scanId) = field.getMetadata(CandidateIndicesKey).get
+//              val candidateScannables =
+//                TableScannable(table, scanId)(eRow) +: candidateIndices.map(index => IndexScannable(table, index, scanId)(eRow))
+//              (name, candidateScannables)
+//          }
+//      }.toList
+//
+//      val candidateFieldCombinations = allFieldCombinations(allCandidateFields)
+//
+//      candidateFieldCombinations.map { fields =>
+//        val inputStruct = struct(fields)
+//        f(inputStruct)
+//      }
+//  }
 }
