@@ -175,30 +175,30 @@ class SqlResolver(val schema: Schema) {
       }
     case SubSelect(parent) =>
       resolveOperator(parent)
-    case Join(outer, inner, joinType, spec) =>
-      val outer1 = resolveOperator(outer)
-      val inner1 = resolveOperator(inner)
+    case Join(left, right, joinType, spec) =>
+      val left1 = resolveOperator(left)
+      val right1 = resolveOperator(right)
       val condition1 = spec match {
         case On(condition) =>
-          withContext(outer1) {
-            withContext(inner1) {
+          withContext(left1) {
+            withContext(right1) {
               resolveExpr(condition)
             }
           }
         case Using(columns) =>
           def resolvedColumns() = columns.map(name => resolveExpr(UnresolvedAttribute(None, name)))
-          val cOuter = withContext(outer1) {
+          val cLeft = withContext(left1) {
             resolvedColumns()
           }
-          val cInner = withContext(inner1) {
+          val cRight = withContext(right1) {
             resolvedColumns()
           }
-          (cOuter, cInner).zipped.map(BinOpExpr(Eq, _, _)).reduce(BinOpExpr(And, _, _))
+          (cLeft, cRight).zipped.map(BinOpExpr(Eq, _, _)).reduce(BinOpExpr(And, _, _))
         case Natural =>
           // requires implementing operatorType, won't support it yet
           throw new NotImplementedError("Natural joins not supported yet")
       }
-      Join(outer1, inner1, joinType, On(condition1))
+      Join(left1, right1, joinType, On(condition1))
     case CrossJoin(outer, inner) =>
       CrossJoin(resolveOperator(outer), resolveOperator(inner))
     case UnionJoin(outer, inner) =>
@@ -220,12 +220,12 @@ class SqlResolver(val schema: Schema) {
     // returns the list of clauses which remain unhandled
     def doPushdown(op: Operator, clauses: List[Expression]): (Operator, List[Expression]) = op match {
       // TODO handle other op cases
-      case Join(outer, inner, joinType, joinSpec) =>
-        val (clausesDependingOnInner, outerOnlyClauses) = clauses.partition(depends(inner, _))
-        val outer1 = doPushdownWithNoRemainingClauses(outer, outerOnlyClauses)
-        val (clausesDependingOnBoth, innerOnlyClauses) = clausesDependingOnInner.partition(depends(outer, _))
-        val inner1 = doPushdownWithNoRemainingClauses(inner, innerOnlyClauses)
-        (Join(outer1, inner1, joinType, joinSpec), clausesDependingOnBoth)
+      case Join(left, right, joinType, joinSpec) =>
+        val (clausesDependingOnRight, leftOnlyClauses) = clauses.partition(depends(right, _))
+        val left1 = doPushdownWithNoRemainingClauses(left, leftOnlyClauses)
+        val (clausesDependingOnBoth, rightOnlyClauses) = clausesDependingOnRight.partition(depends(left, _))
+        val right1 = doPushdownWithNoRemainingClauses(right, rightOnlyClauses)
+        (Join(left1, right1, joinType, joinSpec), clausesDependingOnBoth)
       case _ => (op, clauses)
     }
 
@@ -300,7 +300,7 @@ class SqlResolver(val schema: Schema) {
 
   def tables(op: Operator): Set[Table] = {
     op match {
-      case Join(outer, inner, _, _) => tables(outer) ++ tables(inner)
+      case Join(left, right, _, _) => tables(left) ++ tables(right)
       case Scan(t, _) => Set(table(t))
       case OrderBy(p, _) => tables(p)
       case Aggregate(p, _, _) => tables(p)
@@ -468,7 +468,7 @@ class SqlResolver(val schema: Schema) {
 
   def buildContext(op: Operator): Context = {
     op match {
-      case Join(outer, inner, _, _) => JoinContext(buildContext(outer), buildContext(inner))
+      case Join(left, right, _, _) => JoinContext(buildContext(left), buildContext(right))
       case Scan(t, id) => TableContext(table(t), id)
       case OrderBy(p, by) => buildContext(p)
       case GroupBy(p, by) => buildContext(p) // FIXME remove
@@ -584,7 +584,7 @@ class SqlResolver(val schema: Schema) {
     }
 
   def depends(on: Operator, subquery: Operator): Boolean = subquery match {
-    case Join(outer, inner, _, _) => depends(on, outer) || depends(on, inner)
+    case Join(left, right, _, _) => depends(on, left) || depends(on, right)
     case Scan(t, _) => false
     case OrderBy(p, by) => depends(on, p) || depends(on, by.map(_.expr))
     case Aggregate(p, groupedBy, columns) => depends(on, p) || depends(on, groupedBy) || depends(on, columns)

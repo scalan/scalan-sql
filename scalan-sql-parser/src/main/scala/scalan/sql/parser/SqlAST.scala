@@ -213,7 +213,7 @@ object SqlAST {
   case class Using(columns: ColumnList) extends JoinSpec
   case object Natural extends JoinSpec
 
-  case class Join(outer: Operator, inner: Operator, joinType: JoinType, spec: JoinSpec) extends Operator {
+  case class Join(left: Operator, right: Operator, joinType: JoinType, spec: JoinSpec) extends Operator {
     override def toString = {
       val (inside1, end) = spec match {
         case On(condition) => ("", s" ON $condition")
@@ -227,7 +227,7 @@ object SqlAST {
         case FullOuter => "FULL "
         case LeftSemi => "LEFT SEMI "
       }
-      s"${p(outer)} $inside1${inside2}JOIN ${p(inner)}$end"
+      s"${p(left)} $inside1${inside2}JOIN ${p(right)}$end"
     }
   }
   case class CrossJoin(outer: Operator, inner: Operator) extends Operator {

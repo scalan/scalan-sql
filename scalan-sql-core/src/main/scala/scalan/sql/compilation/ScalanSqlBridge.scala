@@ -110,8 +110,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def generateOperator(op: Operator, inputs: ExprInputs): Plans[_] = ((op match {
     case s: Scan =>
       generateScan(inputs, s)
-    case Join(outer, inner, joinType, joinSpec) =>
-      generateJoin(outer, inner, joinType, joinSpec, inputs)
+    case Join(left, right, joinType, joinSpec) =>
+      generateJoin(left, right, joinType, joinSpec, inputs)
     case Aggregate(p, groupedBy, aggregates) =>
       val inputs1 = inputs.groupByInfo(groupedBy)
       generateOperator(p, inputs1).map {
@@ -206,7 +206,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     scannables.map(physicalRelation)
   }
 
-  def generateJoin(outer: Operator, inner: Operator, joinType: JoinType, joinSpec: JoinSpec, inputs: ExprInputs) = {
+  def generateJoin(left: Operator, right: Operator, joinType: JoinType, joinSpec: JoinSpec, inputs: ExprInputs) = {
     joinSpec match {
       case On(condition) =>
         if (joinType != Inner) {
@@ -214,16 +214,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         }
 
         val inputs1 = inputs.withoutOrderAndGroupInfo
-        val hashJoins = (generateOperator(outer, inputs), bestPlan(inner, inputs1)) match {
-          case (outerPlans: Plans[a] @unchecked, innerExp: RRelation[b] @unchecked) =>
-            val outerRowElem = eRow(outerPlans)
-            val innerRowElem = innerExp.elem.eRow
+        val hashJoins = (generateOperator(left, inputs), bestPlan(right, inputs1)) match {
+          case (leftPlans: Plans[a] @unchecked, rightExp: RRelation[b] @unchecked) =>
+            val leftRowElem = eRow(leftPlans)
+            val rightRowElem = rightExp.elem.eRow
 
-            val (outerJoinColumns, innerJoinColumns) =
-              withContext(outer) {
-                val OuterScopeName = currentScopeName
-                withContext(inner) {
-                  val InnerScopeName = currentScopeName
+            val (leftJoinColumns, rightJoinColumns) =
+              withContext(left) {
+                val LeftScopeName = currentScopeName
+                withContext(right) {
+                  val RightScopeName = currentScopeName
 
                   // TODO this should return Option; if None, hashJoin can't be used
                   def columns(cond: Expression): List[(ResolvedAttribute, ResolvedAttribute)] = cond match {
@@ -233,21 +233,21 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                       val bindingL = resolver.lookup(l)
                       val bindingR = resolver.lookup(r)
                       bindingL.scope match {
-                        case OuterScopeName =>
-                          if (bindingR.scope == InnerScopeName)
+                        case LeftScopeName =>
+                          if (bindingR.scope == RightScopeName)
                             List((l, r))
                           else
-                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerExp): _*)
-                        case InnerScopeName =>
-                          if (bindingR.scope == OuterScopeName)
+                            !!!(s"$l and $r must be columns on opposing join sides", (leftPlans :+ rightExp): _*)
+                        case RightScopeName =>
+                          if (bindingR.scope == LeftScopeName)
                             List((r, l))
                           else
-                            !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerExp): _*)
+                            !!!(s"$l and $r must be columns on opposing join sides", (leftPlans :+ rightExp): _*)
                         case _ =>
-                          !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", (outerPlans :+ innerExp): _*)
+                          !!!(s"$l seems not to be a column of $left or $right: binding $bindingL", (leftPlans :+ rightExp): _*)
                       }
                     case _ =>
-                      !!!(s"Unsupported join condition: $cond", (outerPlans :+ innerExp): _*)
+                      !!!(s"Unsupported join condition: $cond", (leftPlans :+ rightExp): _*)
                   }
 
                   columns(condition).unzip
@@ -261,7 +261,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
                 columns match {
                   case Seq() =>
-                    !!!(s"Join using empty column list", (outerPlans :+ innerExp): _*)
+                    !!!(s"Join using empty column list", (leftPlans :+ rightExp): _*)
                   case Seq(col) =>
                     column(col)
                   case _ =>
@@ -271,27 +271,27 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               }
             }
 
-            val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
-            val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
-            if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
-              !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
-                (outerPlans :+ innerExp :+ outerKeyFun :+ innerKeyFun): _*)
+            val leftKeyFun = keyFun(leftRowElem, left, leftJoinColumns)
+            val rightKeyFun = keyFun(rightRowElem, right, rightJoinColumns)
+            if (leftKeyFun.elem.eRange != rightKeyFun.elem.eRange) {
+              !!!(s"Different key types for two join sides: ${leftKeyFun.elem.eRange} and ${rightKeyFun.elem.eRange}",
+                (leftPlans :+ rightExp :+ leftKeyFun :+ rightKeyFun): _*)
             }
 
-            outerPlans.map(_.hashJoin(innerExp, outerKeyFun, innerKeyFun, leftIsOuter = true))
+            leftPlans.map(_.hashJoin(rightExp, leftKeyFun, rightKeyFun, leftIsOuter = true))
         }
 
         // should all plans be used, or just best plan?
-        def generateNestedLoopJoins(outer0: Operator, inner0: Operator, flip: Boolean) =
-          generateOperator(outer0, inputs).map {
+        def generateNestedLoopJoins(outer: Operator, inner: Operator, flip: Boolean) =
+          generateOperator(outer, inputs).map {
             case outerExp: RRelation[a] @unchecked =>
               val outerRowElem = outerExp.elem.eRow
 
-              withContext(outer0) {
+              withContext(outer) {
                 val f = inferredFun(outerRowElem) { x =>
                   val inputs1 = (inputs + (currentScopeName -> x)).withoutOrderAndGroupInfo
 
-                  val inner1 = Filter(inner0, condition)
+                  val inner1 = Filter(inner, condition)
 
                   bestPlan(inner1, inputs1) match {
                     case innerExp: RRelation[b] @unchecked =>
@@ -310,10 +310,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               }
           }
 
-        val outerNestedLoopJoins = generateNestedLoopJoins(outer, inner, false)
-        val innerNestedLoopJoins = generateNestedLoopJoins(inner, outer, true)
+        val leftNestedLoopJoins = generateNestedLoopJoins(left, right, false)
+        val rightNestedLoopJoins = generateNestedLoopJoins(right, left, true)
 
-        hashJoins ++ outerNestedLoopJoins ++ innerNestedLoopJoins
+        hashJoins ++ leftNestedLoopJoins ++ rightNestedLoopJoins
       case _ =>
         !!!(s"Join spec $joinSpec after resolver")
     }
