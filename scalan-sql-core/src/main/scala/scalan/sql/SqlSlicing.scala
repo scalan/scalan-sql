@@ -85,7 +85,7 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
         case IterMethods.join(_ls, _rs,
                 _lk @ Def(_: Lambda[a, k]),
                 _rk @ Def(_: Lambda[b, _]),
-                _cr) =>
+                _cr, _) =>
           val ls = _ls.asRep[Iter[a]]
           val rs = _rs.asRep[Iter[b]]
           val lk = _lk.asRep[a => k]

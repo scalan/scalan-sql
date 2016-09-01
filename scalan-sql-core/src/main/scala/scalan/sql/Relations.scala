@@ -39,7 +39,7 @@ trait Relations extends ScalanDsl {
     def sort(comparator: Rep[((Row, Row)) => Boolean]): RRelation[Row] = delayInvoke
     def sortBy(comparator: Rep[((Row, Row)) => Int]): RRelation[Row] = delayInvoke
 
-    def join[B, Key](other: RRelation[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key]/*, joinType: JoinType*/): RRelation[(Row, B)] = delayInvoke
+    def hashJoin[B, Key](other: RRelation[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], leftIsOuter: Boolean /*, joinType: JoinType*/): RRelation[(Row, B)] = delayInvoke
 
     def onlyValue(): Rep[Row] = delayInvoke
   }
@@ -83,9 +83,10 @@ trait Relations extends ScalanDsl {
     override def sortBy(comparator: Rep[((Row, Row)) => Int]): RRelation[Row] =
       IterBasedRelation(iter.materialize(cloneFun(eRow)).sortBy(comparator))
 
-    override def join[B, Key](other: RRelation[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key]/*, joinType: JoinType*/): RRelation[(Row, B)] = {
+    // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
+    override def hashJoin[B, Key](other: RRelation[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], leftIsOuter: Boolean /*, joinType: JoinType*/): RRelation[(Row, B)] = {
       val eB = other.eRow
-      iterBasedRelation(iter.join(other.iter, thisKey, otherKey, cloneFun(eB)))
+      iterBasedRelation(iter.join(other.iter, thisKey, otherKey, cloneFun(eB), leftIsOuter))
     }
 
     override def onlyValue(): Rep[Row] =
@@ -208,7 +209,7 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
           val eK = mapKey.elem.asInstanceOf[FuncElem[_, _]].eRange
           val eV = newValue.elem.asInstanceOf[ThunkElem[_]].eItem
           relationElement(keyValElem(eK, eV))
-        case "join" =>
+        case "hashJoin" =>
           val other = args(0).asInstanceOf[Exp[_]]
           val eB = other.elem.asInstanceOf[RelationElem[_, _]].eRow
           val eA = relationElem.eRow

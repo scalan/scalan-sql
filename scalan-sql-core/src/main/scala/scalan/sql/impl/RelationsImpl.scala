@@ -580,13 +580,13 @@ trait RelationsExp extends ScalanExp with RelationsDsl {
       }
     }
 
-    object join {
-      def unapply(d: Def[_]): Option[(Rep[IterBasedRelation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key]) forSome {type Row; type B; type Key}] = d match {
-        case MethodCall(receiver, method, Seq(other, thisKey, otherKey, _*), _) if receiver.elem.isInstanceOf[IterBasedRelationElem[_]] && method.getName == "join" =>
-          Some((receiver, other, thisKey, otherKey)).asInstanceOf[Option[(Rep[IterBasedRelation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key]) forSome {type Row; type B; type Key}]]
+    object hashJoin {
+      def unapply(d: Def[_]): Option[(Rep[IterBasedRelation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key], Boolean) forSome {type Row; type B; type Key}] = d match {
+        case MethodCall(receiver, method, Seq(other, thisKey, otherKey, leftIsOuter, _*), _) if receiver.elem.isInstanceOf[IterBasedRelationElem[_]] && method.getName == "hashJoin" =>
+          Some((receiver, other, thisKey, otherKey, leftIsOuter)).asInstanceOf[Option[(Rep[IterBasedRelation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key], Boolean) forSome {type Row; type B; type Key}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[IterBasedRelation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key]) forSome {type Row; type B; type Key}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[IterBasedRelation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key], Boolean) forSome {type Row; type B; type Key}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
@@ -808,13 +808,13 @@ trait RelationsExp extends ScalanExp with RelationsDsl {
       }
     }
 
-    object join {
-      def unapply(d: Def[_]): Option[(Rep[Relation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key]) forSome {type Row; type B; type Key}] = d match {
-        case MethodCall(receiver, method, Seq(other, thisKey, otherKey, _*), _) if receiver.elem.isInstanceOf[RelationElem[_, _]] && method.getName == "join" =>
-          Some((receiver, other, thisKey, otherKey)).asInstanceOf[Option[(Rep[Relation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key]) forSome {type Row; type B; type Key}]]
+    object hashJoin {
+      def unapply(d: Def[_]): Option[(Rep[Relation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key], Boolean) forSome {type Row; type B; type Key}] = d match {
+        case MethodCall(receiver, method, Seq(other, thisKey, otherKey, leftIsOuter, _*), _) if receiver.elem.isInstanceOf[RelationElem[_, _]] && method.getName == "hashJoin" =>
+          Some((receiver, other, thisKey, otherKey, leftIsOuter)).asInstanceOf[Option[(Rep[Relation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key], Boolean) forSome {type Row; type B; type Key}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[Relation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key]) forSome {type Row; type B; type Key}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[Relation[Row]], RRelation[B], Rep[Row => Key], Rep[B => Key], Boolean) forSome {type Row; type B; type Key}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
