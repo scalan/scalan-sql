@@ -226,6 +226,8 @@ class SqlResolver(val schema: Schema) {
         val (clausesDependingOnBoth, rightOnlyClauses) = clausesDependingOnRight.partition(depends(left, _))
         val right1 = doPushdownWithNoRemainingClauses(right, rightOnlyClauses)
         (Join(left1, right1, joinType, joinSpec), clausesDependingOnBoth)
+      case Filter(parent, condition) =>
+        doPushdown(parent, (clauses ++ conjunctiveClauses(condition)).distinct)
       case _ => (op, clauses)
     }
 
