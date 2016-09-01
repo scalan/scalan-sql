@@ -199,9 +199,9 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
           val f = args(0).asInstanceOf[Exp[_]]
           val eB = f.elem.asInstanceOf[FuncElem[_, _]].eRange
           relationElement(eB)
-        case "mapU" =>
+        case "flatMap" =>
           val f = args(0).asInstanceOf[Exp[_]]
-          val eB = f.elem.asInstanceOf[FuncElem[_, _]].eDom.asInstanceOf[PairElem[_, _]].eFst
+          val eB = f.elem.asInstanceOf[FuncElem[_, _]].eRange.asInstanceOf[RelationElem[_, _]].eRow
           relationElement(eB)
         case "mapReduce" =>
           val mapKey = args(0).asInstanceOf[Exp[_]]

@@ -177,6 +177,10 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           val f = args(0).asInstanceOf[Exp[_]]
           val eB = f.elem.asInstanceOf[FuncElem[_, _]].eDom.asInstanceOf[PairElem[_, _]].eFst
           iterElement(eB)
+        case "flatMap" =>
+          val f = args(0).asInstanceOf[Exp[_]]
+          val eIterB = f.elem.asInstanceOf[FuncElem[_, _]].eRange
+          eIterB
         case "mapReduce" | "mapReduceU" =>
           val mapKey = args(0).asInstanceOf[Exp[_]]
           val newValue = args(2).asInstanceOf[Exp[_]]

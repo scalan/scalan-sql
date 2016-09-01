@@ -20,6 +20,14 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
             Seq((xs, getMark(xs) |/| (All, lm.mDom)))
         }
 
+        case IterMethods.flatMap(_xs, f: RFunc[a, Iter[b]]) => outMark match {
+          case IterMarking(_, mB_out) =>
+            val xs = _xs.asRep[Iter[a]]
+            val mOutMark = IterMarking(All, mB_out.asMark[b])
+            val lm = analyzeFunc(f, mOutMark)
+            Seq((xs, getMark(xs) |/| (All, lm.mDom)))
+        }
+
         case IterMethods.sortBy(_xs, _f) => outMark match {
           case IterMarking(_, mA: SliceMarking[a]) =>
             val xs = _xs.asRep[Iter[a]]
