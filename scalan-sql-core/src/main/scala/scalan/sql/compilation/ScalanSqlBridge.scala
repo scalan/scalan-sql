@@ -213,107 +213,105 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           !!!("Non-inner joins are not supported yet")
         }
 
-        val inputs1 = inputs.withoutOrderAndGroupInfo
-        val hashJoins = (generateOperator(left, inputs), bestPlan(right, inputs1)) match {
-          case (leftPlans: Plans[a] @unchecked, rightExp: RRelation[b] @unchecked) =>
-            val leftRowElem = eRow(leftPlans)
-            val rightRowElem = rightExp.elem.eRow
+        val innerInputs = inputs.withoutOrderAndGroupInfo
 
-            val (leftJoinColumns, rightJoinColumns) =
-              withContext(left) {
-                val LeftScopeName = currentScopeName
-                withContext(right) {
-                  val RightScopeName = currentScopeName
+        def joinsForOrder(leftIsOuter: Boolean) = {
+          val (outer, inner) = if (leftIsOuter) (left, right) else (right, left)
 
-                  // TODO this should return Option; if None, hashJoin can't be used
-                  def columns(cond: Expression): List[(ResolvedAttribute, ResolvedAttribute)] = cond match {
-                    case BinOpExpr(SqlAST.And, l, r) =>
-                      columns(l) ++ columns(r)
-                    case BinOpExpr(Eq, l: ResolvedAttribute, r: ResolvedAttribute) =>
-                      val bindingL = resolver.lookup(l)
-                      val bindingR = resolver.lookup(r)
-                      bindingL.scope match {
-                        case LeftScopeName =>
-                          if (bindingR.scope == RightScopeName)
-                            List((l, r))
-                          else
-                            !!!(s"$l and $r must be columns on opposing join sides", (leftPlans :+ rightExp): _*)
-                        case RightScopeName =>
-                          if (bindingR.scope == LeftScopeName)
-                            List((r, l))
-                          else
-                            !!!(s"$l and $r must be columns on opposing join sides", (leftPlans :+ rightExp): _*)
+          (generateOperator(outer, inputs), bestPlan(inner, innerInputs)) match {
+            case (outerPlans: Plans[a] @unchecked, innerPlan: RRelation[b] @unchecked) =>
+              val outerRowElem = eRow(outerPlans)
+              val innerRowElem = innerPlan.elem.eRow
+
+              val makeHashJoin: RRelation[a] => RRelation[_] = {
+                val (outerJoinColumns, innerJoinColumns) =
+                  withContext(outer) {
+                    val OuterScopeName = currentScopeName
+                    withContext(inner) {
+                      val InnerScopeName = currentScopeName
+
+                      // TODO this should return Option; if None, hashJoin can't be used
+                      def columns(cond: Expression): List[(ResolvedAttribute, ResolvedAttribute)] = cond match {
+                        case BinOpExpr(SqlAST.And, l, r) =>
+                          columns(l) ++ columns(r)
+                        case BinOpExpr(Eq, l: ResolvedAttribute, r: ResolvedAttribute) =>
+                          val bindingL = resolver.lookup(l)
+                          val bindingR = resolver.lookup(r)
+                          bindingL.scope match {
+                            case OuterScopeName =>
+                              if (bindingR.scope == InnerScopeName)
+                                List((l, r))
+                              else
+                                !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerPlan): _*)
+                            case InnerScopeName =>
+                              if (bindingR.scope == OuterScopeName)
+                                List((r, l))
+                              else
+                                !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerPlan): _*)
+                            case _ =>
+                              !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", (outerPlans :+ innerPlan): _*)
+                          }
                         case _ =>
-                          !!!(s"$l seems not to be a column of $left or $right: binding $bindingL", (leftPlans :+ rightExp): _*)
+                          !!!(s"Unsupported join condition: $cond", (outerPlans :+ innerPlan): _*)
                       }
-                    case _ =>
-                      !!!(s"Unsupported join condition: $cond", (leftPlans :+ rightExp): _*)
+
+                      columns(condition).unzip
+                    }
                   }
 
-                  columns(condition).unzip
+                def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
+                  withContext(op) {
+                    def column(column: ResolvedAttribute) =
+                      ExprInputs(currentScopeName -> x).resolveColumn(column)
+
+                    columns match {
+                      case Seq() =>
+                        !!!(s"Join using empty column list", (outerPlans :+ innerPlan): _*)
+                      case Seq(col) =>
+                        column(col)
+                      case _ =>
+                        val fields = columns.map(column)
+                        tupleStruct(fields: _*)
+                    }
+                  }
                 }
+
+                val outerKeyFun = keyFun(outerRowElem, outer, outerJoinColumns)
+                val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
+                if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
+                  !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
+                    (outerPlans :+ innerPlan :+ outerKeyFun :+ innerKeyFun): _*)
+                }
+
+                if (leftIsOuter)
+                  _.hashJoin(innerPlan, outerKeyFun, innerKeyFun, leftIsOuter)
+                else
+                  innerPlan.hashJoin(_, innerKeyFun, outerKeyFun, leftIsOuter)
               }
 
-            def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
-              withContext(op) {
-                def column(column: ResolvedAttribute) =
-                  ExprInputs(currentScopeName -> x).resolveColumn(column)
-
-                columns match {
-                  case Seq() =>
-                    !!!(s"Join using empty column list", (leftPlans :+ rightExp): _*)
-                  case Seq(col) =>
-                    column(col)
-                  case _ =>
-                    val fields = columns.map(column _)
-                    tupleStruct(fields: _*)
-                }
-              }
-            }
-
-            val leftKeyFun = keyFun(leftRowElem, left, leftJoinColumns)
-            val rightKeyFun = keyFun(rightRowElem, right, rightJoinColumns)
-            if (leftKeyFun.elem.eRange != rightKeyFun.elem.eRange) {
-              !!!(s"Different key types for two join sides: ${leftKeyFun.elem.eRange} and ${rightKeyFun.elem.eRange}",
-                (leftPlans :+ rightExp :+ leftKeyFun :+ rightKeyFun): _*)
-            }
-
-            leftPlans.map(_.hashJoin(rightExp, leftKeyFun, rightKeyFun, leftIsOuter = true))
-        }
-
-        // should all plans be used, or just best plan?
-        def generateNestedLoopJoins(outer: Operator, inner: Operator, flip: Boolean) =
-          generateOperator(outer, inputs).map {
-            case outerExp: RRelation[a] @unchecked =>
-              val outerRowElem = outerExp.elem.eRow
-
-              withContext(outer) {
-                val f = inferredFun(outerRowElem) { x =>
-                  val inputs1 = (inputs + (currentScopeName -> x)).withoutOrderAndGroupInfo
-
+              val flatMapArg = withContext(outer) {
+                inferredFun(outerRowElem) { x =>
                   val inner1 = Filter(inner, condition)
 
-                  bestPlan(inner1, inputs1) match {
-                    case innerExp: RRelation[b] @unchecked =>
-                      val innerRowElem = innerExp.elem.eRow
+                  val inner1Plan = bestPlan(inner1, innerInputs + (currentScopeName -> x)).asRep[Relation[b]]
 
-                      val g = inferredFun(innerRowElem) { y =>
-                        val mapped: Exp[_] = if (flip) (y, x) else (x, y)
-                        mapped
-                      }
-
-                      innerExp.map(g)
+                  val g = inferredFun(innerRowElem) { y =>
+                    if (leftIsOuter) (x, y) else (y, x)
                   }
-                }
 
-                outerExp.flatMap(f)
+                  inner1Plan.map(g)
+                }
+              }
+
+              outerPlans.flatMap { outerPlan =>
+                val hashJoin = makeHashJoin(outerPlan)
+                val nestedLoopJoin = outerPlan.flatMap(flatMapArg)
+                Iterator[RRelation[_]](hashJoin, nestedLoopJoin)
               }
           }
+        }
 
-        val leftNestedLoopJoins = generateNestedLoopJoins(left, right, false)
-        val rightNestedLoopJoins = generateNestedLoopJoins(right, left, true)
-
-        hashJoins ++ leftNestedLoopJoins ++ rightNestedLoopJoins
+        joinsForOrder(leftIsOuter = true) ++ joinsForOrder(leftIsOuter = false)
       case _ =>
         !!!(s"Join spec $joinSpec after resolver")
     }
