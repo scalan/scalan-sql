@@ -110,8 +110,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def generateOperator(op: Operator, inputs: ExprInputs): Plans[_] = ((op match {
     case s: Scan =>
       generateScan(inputs, s)
-    case Join(left, right, joinType, joinSpec) =>
-      generateJoin(left, right, joinType, joinSpec, inputs)
+    case join: Join =>
+      generateJoin(join, None, inputs)
     case Aggregate(p, groupedBy, aggregates) =>
       val inputs1 = inputs.groupByInfo(groupedBy)
       generateOperator(p, inputs1).map {
@@ -121,12 +121,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           }
       }
     case Filter(p, predicate) =>
-      // TODO pushdown filter into flatmapped joins
       val inputs1 = inputs.addConstraints(predicate)
-      generateOperator(p, inputs1).map {
-        case joinsExp: RRelation[a] @unchecked =>
-          val eRow = joinsExp.elem.eRow
-          joinsExp.filter(generateLambdaExpr(p, predicate, inputs1)(eRow).asRep[a => Boolean])
+      p match {
+        case join: Join =>
+          generateJoin(join, Some(predicate), inputs1)
+        case _ =>
+          val pPlans = generateOperator(p, inputs1)
+          pPlans.map(generateFilter(_, p, predicate, inputs1))
       }
     case Project(p, columns) =>
       withContext(p) {
@@ -153,6 +154,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case _ =>
       ???(s"Failed to construct Scalan graph from SQL AST $op")
   }).asInstanceOf[Plans[_]]).map(_.setMetadata(SqlOperatorKey)(op))
+
+  def generateFilter[A](plan: RRelation[A], p: Operator, predicate: Expression, inputs: ExprInputs) = {
+    val f = generateLambdaExpr(p, predicate, inputs)(plan.elem.eRow).asRep[A => Boolean]
+    plan.filter(f)
+  }
 
   private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
     def findInput(scope: resolver.Scope): Exp[_] = inputs.scopes.getOrElse(scope.name, {
@@ -206,17 +212,17 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     scannables.map(physicalRelation)
   }
 
-  def generateJoin(left: Operator, right: Operator, joinType: JoinType, joinSpec: JoinSpec, inputs: ExprInputs) = {
-    joinSpec match {
+  def generateJoin(join: Join, filter: Option[Expression], inputs: ExprInputs) = {
+    join.spec match {
       case On(condition) =>
-        if (joinType != Inner) {
+        if (join.joinType != Inner) {
           !!!("Non-inner joins are not supported yet")
         }
 
         val innerInputs = inputs.withoutOrderAndGroupInfo
 
         def joinsForOrder(leftIsOuter: Boolean) = {
-          val (outer, inner) = if (leftIsOuter) (left, right) else (right, left)
+          val (outer, inner) = if (leftIsOuter) (join.left, join.right) else (join.right, join.left)
 
           (generateOperator(outer, inputs), bestPlan(inner, innerInputs)) match {
             case (outerPlans: Plans[a] @unchecked, innerPlan: RRelation[b] @unchecked) =>
@@ -291,7 +297,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
               val flatMapArg = withContext(outer) {
                 inferredFun(outerRowElem) { x =>
-                  val inner1 = Filter(inner, condition)
+                  val condition1 = filter match {
+                    case None => condition
+                    case Some(pred) => BinOpExpr(SqlAST.And, condition, pred)
+                  }
+                  val inner1 = resolver.pushdownFilter(inner, condition1)
 
                   val inner1Plan = bestPlan(inner1, innerInputs + (currentScopeName -> x)).asRep[Relation[b]]
 
@@ -304,7 +314,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               }
 
               outerPlans.flatMap { outerPlan =>
-                val hashJoin = makeHashJoin(outerPlan)
+                val hashJoinUnfiltered = makeHashJoin(outerPlan)
+                val hashJoin = filter match {
+                  case None => hashJoinUnfiltered
+                  case Some(pred) =>
+                    generateFilter(hashJoinUnfiltered, join, pred, inputs)
+                }
+
                 val nestedLoopJoin = outerPlan.flatMap(flatMapArg)
                 Iterator[RRelation[_]](hashJoin, nestedLoopJoin)
               }
@@ -312,8 +328,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         }
 
         joinsForOrder(leftIsOuter = true) ++ joinsForOrder(leftIsOuter = false)
-      case _ =>
-        !!!(s"Join spec $joinSpec after resolver")
+      case otherSpec =>
+        !!!(s"Join spec $otherSpec after resolver")
     }
   }
 
