@@ -172,7 +172,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     findInput(resolver.currScope)
   }
 
-  def generateScan(inputs: ExprInputs, s: Scan): Plans[_] = {
+  def generateScan(inputs: ExprInputs, scan: Scan): Plans[_] = {
     def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
       case se: StructElem[_] =>
         val x1 = x.asRep[Struct]
@@ -199,12 +199,27 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       !!!(s"Can't find $FakeDepName in ${currentLambdaArg.toStringWithType}")
     }
 
-    val tableName = s.tableName
+    val tableName = scan.tableName
     val table = resolver.table(tableName)
-    val candidateIndices = inputs.candidateIndices(s)
     val eRow = tableElems(tableName)
+    val scanId = scan.id
 
-    val scanId = s.id
+    val SingleTableColumnUseInfo(constraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
+
+    val allIndices = resolver.indices(scan.tableName)
+
+    val candidateIndices = allIndices.flatMap { index =>
+      val columns = index.columns
+      val columnNames = columns.map(_.name)
+      // TODO common prefix is enough, we need to add partial sorting primitives
+      // TODO handle the case index should have inverse order
+      val goodForOrder = orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
+      val goodForGroup = groupColumns.nonEmpty && groupColumns.forall(columnNames.contains)
+      val goodForFilterOrJoin = columnNames.takeWhile(constraints.contains).nonEmpty
+
+      goodForOrder || goodForGroup || goodForFilterOrJoin
+    }
+
     // TODO connect to inputs (take DB as argument?)
     val scannables = TableScannable(table, scanId, fakeDep)(eRow) +:
       candidateIndices.map(index => IndexScannable(table, index, scanId, fakeDep)(eRow))
@@ -628,24 +643,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   case class ExprInputs(scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
-    def candidateIndices(scan: Scan) = {
-      val SingleTableColumnUseInfo(constraints, orderColumns, groupColumns) = columnUseInfo.forScan(scan)
-
-      val allIndices = resolver.indices(scan.tableName)
-
-      allIndices.filter { index =>
-        val columns = index.columns
-        val columnNames = columns.map(_.name)
-        // TODO common prefix is enough, we need to add partial sorting primitives
-        // TODO handle the case index should have inverse order
-        val goodForOrder = orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
-        val goodForGroup = groupColumns.nonEmpty && groupColumns.forall(columnNames.contains)
-        val goodForFilterOrJoin = columnNames.takeWhile(constraints.contains).nonEmpty
-
-        goodForOrder || goodForGroup || goodForFilterOrJoin
-      }
-    }
-
     def addConstraints(predicate: Expression) = {
       val clauses = resolver.conjunctiveClauses(predicate)
       val extractedConstraints = clauses.flatMap {
