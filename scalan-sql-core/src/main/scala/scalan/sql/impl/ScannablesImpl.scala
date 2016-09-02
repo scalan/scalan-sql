@@ -302,12 +302,12 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
 
   object IndexScannableMethods {
     object search {
-      def unapply(d: Def[_]): Option[(Rep[IndexScannable[Row]], Int, Option[Bound[Key]], Option[Bound[Key]], SortDirection) forSome {type Row; type Key}] = d match {
-        case MethodCall(receiver, method, Seq(numColumns, lowerBound, upperBound, direction, _*), _) if receiver.elem.isInstanceOf[IndexScannableElem[_]] && method.getName == "search" =>
-          Some((receiver, numColumns, lowerBound, upperBound, direction)).asInstanceOf[Option[(Rep[IndexScannable[Row]], Int, Option[Bound[Key]], Option[Bound[Key]], SortDirection) forSome {type Row; type Key}]]
+      def unapply(d: Def[_]): Option[(Rep[IndexScannable[Row]], SearchBounds, SortDirection) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(bounds, direction, _*), _) if receiver.elem.isInstanceOf[IndexScannableElem[_]] && method.getName == "search" =>
+          Some((receiver, bounds, direction)).asInstanceOf[Option[(Rep[IndexScannable[Row]], SearchBounds, SortDirection) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[IndexScannable[Row]], Int, Option[Bound[Key]], Option[Bound[Key]], SortDirection) forSome {type Row; type Key}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[IndexScannable[Row]], SearchBounds, SortDirection) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }

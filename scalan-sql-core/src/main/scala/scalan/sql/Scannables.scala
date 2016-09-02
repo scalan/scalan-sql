@@ -19,14 +19,23 @@ trait Scannables extends ScalanDsl {
   abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row]
 
   abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    def search[Key](numColumns: Int, lowerBound: Option[Bound[Key]], upperBound: Option[Bound[Key]], direction: SortDirection): RIter[Row] = delayInvoke
+    def search(bounds: SearchBounds, direction: SortDirection): RIter[Row] = delayInvoke
   }
 }
 
 trait ScannablesDsl extends impl.ScannablesAbs { self: ScalanSql =>
   implicit def ScannableElemExtensions[A](ie: Elem[Scannable[A]]) = ie.asInstanceOf[ScannableElem[A, Scannable[A]]]
 
-  case class Bound[Key](value: Rep[Key], isInclusive: Boolean)
+  case class Bound(value: Rep[_], isInclusive: Boolean)
+
+  case class SearchBounds(fixedValues: List[Rep[_]], lowerBound: Option[Bound], upperBound: Option[Bound]) {
+    def addFixedValue(value: Rep[_]) = copy(fixedValues = value :: fixedValues)
+  }
+
+  object SearchBounds {
+    def fixedValue(value: Rep[_]) = SearchBounds(List(value), None, None)
+    def range(lowerBound: Option[Bound], upperBound: Option[Bound]) = SearchBounds(Nil, lowerBound, upperBound)
+  }
 }
 
 trait ScannablesDslStd extends impl.ScannablesStd { self: ScalanSqlStd =>

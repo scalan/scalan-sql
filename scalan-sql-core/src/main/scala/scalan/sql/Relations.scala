@@ -85,8 +85,15 @@ trait Relations extends ScalanDsl {
 
     // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
     override def hashJoin[B, Key](other: RRelation[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], leftIsOuter: Boolean /*, joinType: JoinType*/): RRelation[(Row, B)] = {
-      val eB = other.eRow
-      iterBasedRelation(iter.join(other.iter, thisKey, otherKey, cloneFun(eB), leftIsOuter))
+      implicit val eB = other.selfType1.eRow
+      val iter1 = if (leftIsOuter)
+        iter.join(other.iter, thisKey, otherKey, cloneFun(eB))
+      else
+        other.iter.join(iter, otherKey, thisKey, cloneFun(eRow)).map(fun {
+          pair => (pair._2, pair._1)
+        })
+
+      iterBasedRelation(iter1)
     }
 
     override def onlyValue(): Rep[Row] =

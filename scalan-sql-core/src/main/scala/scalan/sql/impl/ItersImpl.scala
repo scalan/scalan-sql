@@ -505,12 +505,12 @@ trait ItersExp extends ScalanExp with ItersDsl {
     }
 
     object join {
-      def unapply(d: Def[_]): Option[(Rep[Iter[Row]], RIter[B], Rep[Row => Key], Rep[B => Key], Rep[B => B], Boolean) forSome {type Row; type B; type Key}] = d match {
-        case MethodCall(receiver, method, Seq(other, thisKey, otherKey, cloneOther, leftIsOuter, _*), _) if receiver.elem.isInstanceOf[IterElem[_, _]] && method.getName == "join" =>
-          Some((receiver, other, thisKey, otherKey, cloneOther, leftIsOuter)).asInstanceOf[Option[(Rep[Iter[Row]], RIter[B], Rep[Row => Key], Rep[B => Key], Rep[B => B], Boolean) forSome {type Row; type B; type Key}]]
+      def unapply(d: Def[_]): Option[(Rep[Iter[Row]], RIter[B], Rep[Row => Key], Rep[B => Key], Rep[B => B]) forSome {type Row; type B; type Key}] = d match {
+        case MethodCall(receiver, method, Seq(other, thisKey, otherKey, cloneOther, _*), _) if receiver.elem.isInstanceOf[IterElem[_, _]] && method.getName == "join" =>
+          Some((receiver, other, thisKey, otherKey, cloneOther)).asInstanceOf[Option[(Rep[Iter[Row]], RIter[B], Rep[Row => Key], Rep[B => Key], Rep[B => B]) forSome {type Row; type B; type Key}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[Iter[Row]], RIter[B], Rep[Row => Key], Rep[B => Key], Rep[B => B], Boolean) forSome {type Row; type B; type Key}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[Iter[Row]], RIter[B], Rep[Row => Key], Rep[B => Key], Rep[B => B]) forSome {type Row; type B; type Key}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }

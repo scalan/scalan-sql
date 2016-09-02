@@ -52,7 +52,7 @@ trait Iters extends ScalanDsl {
     def sortBy(comparator: Rep[((Row, Row)) => Int]): RIter[Row] = delayInvoke
 
     // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
-    def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B], leftIsOuter: Boolean/*, joinType: JoinType*/): RIter[(Row, B)] = delayInvoke
+    def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)] = delayInvoke
 
     def toArray: Arr[Row] = delayInvoke
 
@@ -244,7 +244,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
 
     case IterMethods.join(
             IsSliced(ls: RIter[s]@unchecked, IterMarking(All, mA: SliceMarking[a])),
-            _rs, _lk, rk: RFunc[b,k]@unchecked, _cr, lo) =>
+            _rs, _lk, rk: RFunc[b,k]@unchecked, _cr) =>
       implicit val eA = mA.elem
       implicit val eB = rk.elem.eDom
       val rs = _rs.asRep[Iter[b]]
@@ -257,11 +257,11 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       assert(eK == slk.elem.eRange, s"$eK == ${slk.elem.eRange}")
       assert(eK == rk.elem.eRange, s"$eK == ${rk.elem.eRange}")
       assert(mA.projectedElem == eS, s"${mA.projectedElem} == $eS")
-      Sliced(ls.join(rs, slk, rk, cr, lo), IterMarking(All, PairMarking(mA, eB.toMarking)))
+      Sliced(ls.join(rs, slk, rk, cr), IterMarking(All, PairMarking(mA, eB.toMarking)))
 
     case IterMethods.join(_ls,
             IsSliced(rs: RIter[s]@unchecked, IterMarking(All, mB: SliceMarking[b])),
-            lk: RFunc[a,k]@unchecked, _rk, _cr, lo) =>
+            lk: RFunc[a,k]@unchecked, _rk, _cr) =>
       implicit val eA = lk.elem.eDom
       implicit val eB = mB.elem
       val ls = _ls.asRep[Iter[a]]
@@ -275,7 +275,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       assert(eK == srk.elem.eRange, s"$eK == ${srk.elem.eRange}")
       assert(eK == lk.elem.eRange, s"$eK == ${lk.elem.eRange}")
       assert(mB.projectedElem == eS, s"${mB.projectedElem} == $eS")
-      Sliced(ls.join(rs, lk, srk, scr, lo), IterMarking(All, PairMarking(eA.toMarking, mB)))
+      Sliced(ls.join(rs, lk, srk, scr), IterMarking(All, PairMarking(eA.toMarking, mB)))
 
     case IterMethods.reduce(
             IsSliced(xs: RIter[s]@unchecked, IterMarking(KeyPath.All, mA: SliceMarking[a])),

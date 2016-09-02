@@ -22,7 +22,7 @@ class IterSlicingTests extends AbstractSlicingTests {
 
     lazy val funJoin = fun { in: Rep[(Iter[Struct], Iter[Struct])] =>
       val Pair(ls, rs) = in
-      ls.join(rs, funOneField, funOneField, cloneFun(eIn), true)
+      ls.join(rs, funOneField, funOneField, cloneFun(eIn))
       }(Lazy(pairElement(iterElement(eIn),iterElement(eIn))),
         iterElement(pairElement(eIn, eIn)))
 

@@ -5,7 +5,8 @@ import java.sql.Date
 import scala.runtime.IntRef
 import scalan.sql.parser.{SqlAST, SqlParser, SqlResolver}
 import SqlAST._
-import scalan.sql.{ColumnUseInfo, SingleTableColumnUseInfo, ScalanSqlExp}
+import scala.util.Try
+import scalan.sql.{ColumnUseInfo, ScalanSqlExp, SingleTableColumnUseInfo}
 
 object ScalanSqlBridge {
   val FakeDepName = "!_fake_dep_!"
@@ -90,7 +91,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   // TODO plans should include cost
-  def selectBestPlan[A](plans: Plans[A]) = plans.head
+  // for now just assume plan which has fewest scans (and most searches) is the best
+  def selectBestPlan[A](plans: Plans[A]) = plans.minBy {
+    plan => new PGraph(plan).scheduleAll.count {
+      case Def(ScannableMethods.fullScan(_, _)) => true
+      case _ => false
+    }
+  }
 
   def scanIterName(s: Scan) = s"${s.tableName}{${s.id}}"
 
@@ -204,27 +211,101 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     val eRow = tableElems(tableName)
     val scanId = scan.id
 
-    val SingleTableColumnUseInfo(constraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
+    val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
 
     val allIndices = resolver.indices(scan.tableName)
 
-    val candidateIndices = allIndices.flatMap { index =>
+    // TODO connect to inputs (take DB as argument?)
+    val indexPlans = allIndices.flatMap { index =>
       val columns = index.columns
       val columnNames = columns.map(_.name)
-      // TODO common prefix is enough, we need to add partial sorting primitives
-      // TODO handle the case index should have inverse order
-      val goodForOrder = orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
-      val goodForGroup = groupColumns.nonEmpty && groupColumns.forall(columnNames.contains)
-      val goodForFilterOrJoin = columnNames.takeWhile(constraints.contains).nonEmpty
 
-      goodForOrder || goodForGroup || goodForFilterOrJoin
+      def boundsLoop(columnNames: List[String]): Option[SearchBounds] = columnNames match {
+        case name :: tail =>
+          allConstraints.get(name).flatMap { constraints =>
+            val constraintsWithExps = constraints.flatMap {
+              case (op, value) =>
+                // failures just mean out-of-scope values are used and so we can't use it in a scan
+                Try {
+                  val valueExp = generateExpr(value, inputs)
+                  (op, valueExp)
+                }.toOption
+            }.groupBy(_._1)
+
+            if (constraintsWithExps.nonEmpty) {
+              constraintsWithExps.get(Eq) match {
+                case Some(eqConstraints) =>
+                  // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
+                  val fixedValue = eqConstraints.head._2
+
+                  boundsLoop(tail) match {
+                    case None =>
+                      Some(SearchBounds.fixedValue(fixedValue))
+                    case Some(bounds) =>
+                      Some(bounds.addFixedValue(fixedValue))
+                  }
+                case None =>
+                  def bound(isLower: Boolean) = {
+                    def bound1(isInclusive: Boolean) = {
+                      val op = (isLower, isInclusive) match {
+                        case (true, true) => GreaterEq
+                        case (true, false) => Greater
+                        case (false, true) => LessEq
+                        case (false, false) => Less
+                      }
+
+                      constraintsWithExps.get(op).map(_.map(_._2).reduce {
+                        (p1, p2) =>
+                          ordOp(p1, p2) {
+                            (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
+                          }
+                      })
+                    }.map(Bound(_, isInclusive))
+
+                    val inclusiveBound = bound1(true)
+                    val exclusiveBound = bound1(false)
+                    // TODO This is safe, but we can get a better bound if
+                    // both are defined, using staged IF and comparison
+                    exclusiveBound.orElse(inclusiveBound)
+                  }
+
+                  val lowerBound = bound(true)
+                  val upperBound = bound(false)
+
+                  Some(SearchBounds.range(lowerBound, upperBound))
+              }
+            } else
+              None
+          }
+        case Nil => None
+      }
+
+      // FIXME goodForOrder/group can only be used after cost calculation is added
+      // TODO common prefix is enough, we need to add partial sorting primitives
+      val goodForOrder: Option[SortDirection] = None
+      // orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
+      val goodForGroup = false // groupColumns.nonEmpty && columnNames.takeWhile(groupColumns.contains).nonEmpty
+
+      val iter = boundsLoop(columnNames) match {
+        case Some(bounds) =>
+          val scannable = IndexScannable(table, index, scanId, fakeDep)(eRow)
+          val direction = goodForOrder.getOrElse(Ascending)
+
+          Some(scannable.search(bounds, direction))
+        case None =>
+          val optDirection = goodForOrder.orElse(if (goodForGroup) Some(Ascending) else None)
+
+          optDirection.map { direction =>
+            IndexScannable(table, index, scanId, fakeDep)(eRow).fullScan(direction)
+          }
+      }
+
+      iter.map(iterBasedRelation(_))
     }
 
-    // TODO connect to inputs (take DB as argument?)
-    val scannables = TableScannable(table, scanId, fakeDep)(eRow) +:
-      candidateIndices.map(index => IndexScannable(table, index, scanId, fakeDep)(eRow))
+    val tablePlan = iterBasedRelation(TableScannable(table, scanId, fakeDep)(eRow).fullScan(Ascending))
 
-    scannables.map(physicalRelation)
+    tablePlan +: indexPlans
   }
 
   def generateJoin(join: Join, filter: Option[Expression], inputs: ExprInputs) = {
@@ -636,7 +717,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     f(num.asInstanceOf[Numeric[A]], elem.asElem[A])(l1.asRep[A], r1.asRep[A])
   }
 
-  private def ordOp[A, B](l: Exp[A], r: Exp[B])(f: (Ordering[A], Elem[A]) => BinOp[A, Boolean]) = {
+  private def ordOp[A, B, C](l: Exp[A], r: Exp[B])(f: (Ordering[A], Elem[A]) => BinOp[A, C]) = {
     val LRHS(l1, r1, elem) = widen(l, r)
     val ord = getOrdering(elem)
     f(ord.asInstanceOf[Ordering[A]], elem.asElem[A])(l1.asRep[A], r1.asRep[A])
