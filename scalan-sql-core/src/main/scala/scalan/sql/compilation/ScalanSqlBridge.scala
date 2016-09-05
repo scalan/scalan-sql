@@ -86,17 +86,32 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   def bestPlan(operator: Operator, inputs: ExprInputs) = {
     val allPlans = generateOperator(operator, inputs)
-    val bestPlan = selectBestPlan(allPlans)
-    bestPlan
+    selectBestPlan(allPlans)
   }
 
   // TODO plans should include cost
   // for now just assume plan which has fewest scans (and most searches) is the best
-  def selectBestPlan[A](plans: Plans[A]) = plans.minBy {
-    plan => new PGraph(plan).scheduleAll.count {
-      case Def(ScannableMethods.fullScan(_, _)) => true
-      case _ => false
+  def selectBestPlan[A](plans: Plans[A]) = plans.minBy { plan =>
+    val graph = new PGraph(plan)
+    val costs = graph.scheduleAll.iterator.map {
+      te => te.rhs match {
+        case ScannableMethods.fullScan(_, _) =>
+          1000.0
+        case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds, _) =>
+          // TODO check how precise bounds are
+          val index = is.index.asValue
+          if (index.isPrimaryKey)
+            1.0
+          else if (index.isUnique)
+            2.0
+          else
+            5.0
+        case _ =>
+          // obviously need to be more precise
+          10.0
+      }
     }
+    costs.sum
   }
 
   def scanIterName(s: Scan) = s"${s.tableName}{${s.id}}"
