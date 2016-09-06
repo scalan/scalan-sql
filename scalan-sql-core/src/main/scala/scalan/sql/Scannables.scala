@@ -3,7 +3,7 @@ package scalan.sql
 import java.lang.reflect.Method
 
 import scalan._
-import scalan.sql.parser.SqlAST.{Index, SortDirection, Table}
+import scalan.sql.parser.SqlAST._
 
 trait Scannables extends ScalanDsl {
   self: ScannablesDsl with ScalanSql =>
@@ -13,13 +13,53 @@ trait Scannables extends ScalanDsl {
   trait Scannable[Row] extends Def[Scannable[Row]] {
     def eRow: Elem[Row]
 
-    def fullScan(direction: SortDirection): RIter[Row] = delayInvoke
+    def fullScan(direction: SortDirection): Rep[CursorIter[Row]] = delayInvoke
   }
 
   abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row]
 
   abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    def search(bounds: SearchBounds, direction: SortDirection): RIter[Row] = delayInvoke
+    // FIXME assumes all columns in index are ASC
+    def search(bounds: SearchBounds, direction: SortDirection): RIter[Row] = {
+      val index0 = index.asValue
+
+      def inverseIfDescending(op: ComparisonOp) = op.inverseIfDescending(direction)
+
+      val (startBound, endBound) = direction match {
+        case Ascending => (bounds.lowerBound, bounds.upperBound)
+        case Descending => (bounds.upperBound, bounds.lowerBound)
+      }
+      val fixedValues = bounds.fixedValues
+      val (keyValues, startOpIfAscending) = startBound match {
+        case None =>
+          (fixedValues, GreaterEq)
+        case Some(Bound(value, isInclusive)) =>
+          (fixedValues :+ value, if (isInclusive) GreaterEq else Greater)
+      }
+      val startOp = inverseIfDescending(startOpIfAscending)
+      val test = fun[Row, Boolean] { _x =>
+        val x = _x.asRep[Struct]
+
+        val firstCondition = endBound match {
+          case None => toRep(true)
+          case Some(Bound(value, isInclusive)) =>
+            val column = index0.columns(fixedValues.length)
+            val y = field(x, column.name)
+            val endOp = inverseIfDescending(if (isInclusive) LessEq else Less)
+
+            comparisonOp(endOp, y, value)
+        }
+
+        (index0.columns, fixedValues).zipped.foldLeft(firstCondition) {
+          case (cond, (column, value)) =>
+            val y = field(x, column.name)
+            cond && comparisonOp(Eq, y, value)
+        }
+      }
+
+      val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
+      fullScan(direction).seekIndex(repKeyValues, startOp).takeWhile(test)
+    }
   }
 }
 

@@ -2,7 +2,7 @@ package scalan.sql
 
 import java.lang.reflect.Method
 import scalan._
-import scalan.sql.parser.SqlAST.{Index, SortDirection, Table}
+import scalan.sql.parser.SqlAST._
 import scala.reflect.runtime.universe.{WeakTypeTag, weakTypeTag}
 import scalan.meta.ScalanAst._
 

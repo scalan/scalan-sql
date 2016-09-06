@@ -5,7 +5,7 @@ import java.lang.reflect.Method
 import scalan._
 import scalan.common.Lazy
 import scala.reflect.runtime.universe._
-import scalan.sql.parser.SqlAST.{Index, Table}
+import scalan.sql.parser.SqlAST.{ComparisonOp, Index, Table}
 
 trait Iters extends ScalanDsl {
   self: ItersDsl with ScalanSql =>
@@ -23,6 +23,8 @@ trait Iters extends ScalanDsl {
     def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B] = delayInvoke
 
     def filter(f: Rep[Row => Boolean]): RIter[Row] = delayInvoke
+
+    def takeWhile(f: Rep[Row => Boolean]): RIter[Row] = delayInvoke
 
     def isEmpty: Rep[Boolean] = delayInvoke
 
@@ -65,6 +67,8 @@ trait Iters extends ScalanDsl {
 
   trait CursorIter[Row] extends Iter[Row] {
     def eRow: Elem[Row]
+
+    def seekIndex(keyValues: Rep[Array[Any]], operation: ComparisonOp): Rep[CursorIter[Row]] = delayInvoke
   }
 
   abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
@@ -167,7 +171,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "sort" | "sortBy" | "materialize" =>
+        case "filter" | "takeWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" =>
           receiver.elem
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]
@@ -208,6 +212,18 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       val eS = xs.elem.eRow
       assert(eS == sp.elem.eDom, s"${eS} == ${sp.elem.eDom}")
       Sliced(xs.filter(sp), im.asMark[Iter[a]])
+
+    case IterMethods.takeWhile(
+            IsSliced(xs: RIter[s]@unchecked, im @ IterMarking(All, mA: SliceMarking[a])), _p) =>
+      val p = _p.asRep[a => Boolean]
+      val sp = sliceIn(p, mA).asRep[s => Boolean]
+      val eS = xs.elem.eRow
+      assert(eS == sp.elem.eDom, s"${eS} == ${sp.elem.eDom}")
+      Sliced(xs.takeWhile(sp), im.asMark[Iter[a]])
+
+    case CursorIterMethods.seekIndex(
+            IsSliced(xs: Rep[CursorIter[s]] @unchecked, im @ IterMarking(All, mA: SliceMarking[a])), keyValues, op) =>
+      Sliced(xs.seekIndex(keyValues, op), im.asMark[Iter[a]])
 
     case IterMethods.map(
             IsSliced(_xs, IterMarking(All, mA: SliceMarking[a])),

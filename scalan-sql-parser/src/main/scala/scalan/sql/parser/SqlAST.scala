@@ -264,6 +264,11 @@ object SqlAST {
 
   sealed abstract class ComparisonOp(name: String) extends BinOp(name) {
     def inverse: ComparisonOp
+
+    def inverseIfDescending(direction: SortDirection) = direction match {
+      case Ascending => this
+      case Descending => inverse
+    }
   }
   case object Eq extends ComparisonOp("=") {
     def inverse = Eq

@@ -553,31 +553,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   def generateComparator[A](table: Operator, order: List[SortSpec], inputs: ExprInputs)(implicit eRow: Elem[A]) = {
-    def compare(l: Exp[_], r: Exp[_]) = {
-      widen(l, r) match {
-        case lrhs: LRHS[a] =>
-          val elem = lrhs.elem
-          val ord = getOrdering(elem)
-          OrderingLT(ord)(lrhs.l, lrhs.r)
-      }
-    }
-
     withContext(table) {
       fun[(A, A), Boolean] { x =>
         // TODO NullsOrdering currently ignored
-        order.map {
-          case SortSpec(expr, direction, _) =>
+        order.foldRight(toRep(false)) {
+          case (SortSpec(expr, direction, _), acc) =>
             val lhs = generateExpr(expr, inputs + (currentScopeName -> x._1))
             val rhs = generateExpr(expr, inputs + (currentScopeName -> x._2))
-            direction match {
-              case Ascending =>
-                (compare(lhs, rhs), lhs === rhs)
-              case Descending =>
-                (compare(rhs, lhs), rhs === lhs)
-            }
-        }.foldRight(toRep(false)) { (comp1, acc) =>
-          comp1._1 || (comp1._2 && acc)
-        }
+            val op = Less.inverseIfDescending(direction)
+            comparisonOp(op, lhs, rhs) || ((lhs === rhs) && acc)
+          }
       }
     }
   }
@@ -625,117 +610,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   def getExprType(expr: Expression): Elem[_] = {
     sqlTypeToElem(resolver.getExprType(expr))
-  }
-
-  private def getOrdering[T](e: Elem[T]): Ordering[T] = (e.asInstanceOf[TypeDesc] match {
-    case IntElement => implicitly[Ordering[Int]]
-    case LongElement => implicitly[Ordering[Long]]
-    case DoubleElement => implicitly[Ordering[Double]]
-    case CharElement => implicitly[Ordering[Char]]
-    case StringElement => implicitly[Ordering[String]]
-    case DateElement => implicitly[Ordering[Date]]
-    case PairElem(eFst: Elem[a], eSnd: Elem[b]) =>
-      val ordA: Ordering[a] = getOrdering(eFst)
-      val ordB: Ordering[b] = getOrdering(eSnd)
-      Ordering.Tuple2(ordA, ordB)
-    case _ => ???(s"Don't know how to create Ordering for $e")
-  }).asInstanceOf[Ordering[T]]
-
-  private def getNumeric[T](e: Elem[T]): Numeric[T] = (e.asInstanceOf[TypeDesc] match {
-    case IntElement => implicitly[Numeric[Int]]
-    case DoubleElement => implicitly[Numeric[Double]]
-    case LongElement => implicitly[Numeric[Long]]
-    case BooleanElement => BooleanNumeric
-//    case DateElement => implicitly[Numeric[Date]]
-    case _ => ???(s"Don't know how to create Numeric for $e")
-  }).asInstanceOf[Numeric[T]]
-
-  private case class LRHS[A](l: Exp[A], r: Exp[A], elem: Elem[A])
-
-  // brings l and r to the same type
-  private def widen[A, B](l: Exp[A], r: Exp[B]): LRHS[_] = {
-    implicit val eL = l.elem
-    implicit val eR = r.elem
-    if (eL == eR)
-      LRHS(l, r.asRep[A], eL)
-    else
-      (eL.asInstanceOf[TypeDesc], eR.asInstanceOf[TypeDesc]) match {
-        // Should handle two structs with same field names?
-        case (StructElem(_, fields), _) =>
-          if (fields.length == 1) {
-            val l1 = field(l.asRep[Struct], 0)
-            widen(l1, r)
-          } else {
-            !!!(s"Arithmetic operation on a multi-field struct ${l.toStringWithType}", l, r)
-          }
-        case (_, StructElem(_, fields)) =>
-          if (fields.length == 1) {
-            val r1 = field(r.asRep[Struct], 0)
-            widen(l, r1)
-          } else {
-            !!!(s"Arithmetic operation on a multi-field struct ${r.toStringWithType}", l, r)
-          }
-        // zipWith for two iterators?
-        case (eL: RelationElem[a, _], _) =>
-          // TODO verify that l itself isn't used elsewhere, same below
-          val l1 = l.asRep[Relation[a]].onlyValue()
-          widen(l1, r)
-        case (_, eR: RelationElem[b, _]) =>
-          val r1 = r.asRep[Relation[b]].onlyValue()
-          widen(l, r1)
-        case (DoubleElement, _) =>
-          implicit val numR = getNumeric(eR)
-          LRHS(l.asRep[Double], r.toDouble, DoubleElement)
-        case (_, DoubleElement) =>
-          implicit val numL = getNumeric(eL)
-          LRHS(l.toDouble, r.asRep[Double], DoubleElement)
-        case (LongElement, FloatElement) =>
-          LRHS(l.asRep[Long].toDouble, r.asRep[Float].toDouble, DoubleElement)
-        case (FloatElement, LongElement) =>
-          LRHS(l.asRep[Float].toDouble, r.asRep[Long].toDouble, DoubleElement)
-        case (LongElement, _) =>
-          implicit val numR = getNumeric(eR)
-          LRHS(l.asRep[Long], r.toLong, LongElement)
-        case (_, LongElement) =>
-          implicit val numL = getNumeric(eL)
-          LRHS(l.toLong, r.asRep[Long], LongElement)
-        case (FloatElement, _) =>
-          implicit val numR = getNumeric(eR)
-          LRHS(l.asRep[Float], r.toFloat, FloatElement)
-        case (_, FloatElement) =>
-          implicit val numL = getNumeric(eL)
-          LRHS(l.toFloat, r.asRep[Float], FloatElement)
-        case (IntElement, _) =>
-          implicit val numR = getNumeric(eR)
-          LRHS(l.asRep[Int], r.toInt, IntElement)
-        case (_, IntElement) =>
-          implicit val numL = getNumeric(eL)
-          LRHS(l.toInt, r.asRep[Int], IntElement)
-        // Dates and times are represented as strings in SQLite
-        case (DateElement | TimeElement | TimestampElement, StringElement) =>
-          LRHS(l.asRep[String], r.asRep[String], StringElement)
-        case (StringElement, DateElement | TimeElement | TimestampElement) =>
-          LRHS(l.asRep[String], r.asRep[String], StringElement)
-        case (StringElement, CharElement) =>
-          LRHS(l.asRep[String], r.toStringRep, StringElement)
-        case (CharElement, StringElement) =>
-          LRHS(l.toStringRep, r.asRep[String], StringElement)
-        case _ =>
-          !!!(s"No common numeric type for ${l.toStringWithType} and ${r.toStringWithType}", l, r)
-      }
-  }
-
-  private def numOp[A, B](l: Exp[A], r: Exp[B])(f: (Numeric[A], Elem[A]) => BinOp[A, A]) = {
-    val LRHS(l1, r1, elem) = widen(l, r)
-    val num = getNumeric(elem)
-    // works by type erasure
-    f(num.asInstanceOf[Numeric[A]], elem.asElem[A])(l1.asRep[A], r1.asRep[A])
-  }
-
-  private def ordOp[A, B, C](l: Exp[A], r: Exp[B])(f: (Ordering[A], Elem[A]) => BinOp[A, C]) = {
-    val LRHS(l1, r1, elem) = widen(l, r)
-    val ord = getOrdering(elem)
-    f(ord.asInstanceOf[Ordering[A]], elem.asElem[A])(l1.asRep[A], r1.asRep[A])
   }
 
   case class ExprInputs(scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
@@ -859,16 +733,8 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
             case _ =>
               !!!(s"Modulo on non-integral type ${elem.name}")
           })
-        case Eq | Is =>
-          ordOp(lExp, rExp)((_, _) => Equals())
-        case Less =>
-          ordOp(lExp, rExp)((ord, _) => OrderingLT(ord))
-        case LessEq =>
-          ordOp(lExp, rExp)((ord, _) => OrderingLTEQ(ord))
-        case Greater =>
-          ordOp(lExp, rExp)((ord, _) => OrderingGT(ord))
-        case GreaterEq =>
-          ordOp(lExp, rExp)((ord, _) => OrderingGTEQ(ord))
+        case op: ComparisonOp =>
+          comparisonOp(op, lExp, rExp)
       }
     case NotExpr(opd) =>
       !generateExpr(opd, inputs).asRep[Boolean]
