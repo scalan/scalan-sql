@@ -41,6 +41,7 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with ItersDsl with Relation
   implicit val tableElem = new BaseElem[Table](null)
   implicit val indexElem = new BaseElem[Index](null)
   implicit val comparisonOpElem = new BaseElem[ComparisonOp](null)
+  implicit val directionElem = new BaseElem[SortDirection](Ascending)
   val SqlOperatorKey = MetaKey[Operator]("sql-origin-operator")
   val SqlExpressionKey = MetaKey[Expression]("sql-origin-expression")
   val CandidateIndicesKey = MetaKey[((Table, List[Index]), Int)]("sql-candidate-indices")

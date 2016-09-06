@@ -95,9 +95,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     val graph = new PGraph(plan)
     val costs = graph.scheduleAll.iterator.map {
       te => te.rhs match {
-        case ScannableMethods.fullScan(_, _) =>
+        case ScannableMethods.fullScan(_) =>
           1000.0
-        case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds, _) =>
+        case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
           // TODO check how precise bounds are
           val index = is.index.asValue
           if (index.isPrimaryKey)
@@ -303,22 +303,22 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
       val iter = boundsLoop(columnNames) match {
         case Some(bounds) =>
-          val scannable = IndexScannable(table, index, scanId, fakeDep)(eRow)
           val direction = goodForOrder.getOrElse(Ascending)
+          val scannable = IndexScannable(table, index, scanId, direction, fakeDep)(eRow)
 
-          Some(scannable.search(bounds, direction))
+          Some(scannable.search(bounds))
         case None =>
           val optDirection = goodForOrder.orElse(if (goodForGroup) Some(Ascending) else None)
 
           optDirection.map { direction =>
-            IndexScannable(table, index, scanId, fakeDep)(eRow).fullScan(direction)
+            IndexScannable(table, index, scanId, direction, fakeDep)(eRow).fullScan()
           }
       }
 
       iter.map(iterBasedRelation(_))
     }
 
-    val tablePlan = iterBasedRelation(TableScannable(table, scanId, fakeDep)(eRow).fullScan(Ascending))
+    val tablePlan = iterBasedRelation(TableScannable(table, scanId, Ascending: SortDirection, fakeDep)(eRow).fullScan())
 
     tablePlan +: indexPlans
   }

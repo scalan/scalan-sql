@@ -13,19 +13,20 @@ trait Scannables extends ScalanDsl {
   trait Scannable[Row] extends Def[Scannable[Row]] {
     def eRow: Elem[Row]
 
-    def fullScan(direction: SortDirection): Rep[CursorIter[Row]] = delayInvoke
+    def fullScan(): Rep[CursorIter[Row]] = delayInvoke
   }
 
-  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row]
+  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row]
 
-  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
     // FIXME assumes all columns in index are ASC
-    def search(bounds: SearchBounds, direction: SortDirection): RIter[Row] = {
+    def search(bounds: SearchBounds): RIter[Row] = {
       val index0 = index.asValue
+      val direction0 = direction.asValue
 
-      def inverseIfDescending(op: ComparisonOp) = op.inverseIfDescending(direction)
+      def inverseIfDescending(op: ComparisonOp) = op.inverseIfDescending(direction0)
 
-      val (startBound, endBound) = direction match {
+      val (startBound, endBound) = direction0 match {
         case Ascending => (bounds.lowerBound, bounds.upperBound)
         case Descending => (bounds.upperBound, bounds.lowerBound)
       }
@@ -58,7 +59,7 @@ trait Scannables extends ScalanDsl {
       }
 
       val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
-      fullScan(direction).seekIndex(repKeyValues, startOp).takeWhile(test)
+      fullScan().seekIndex(repKeyValues, startOp).takeWhile(test)
     }
   }
 }
