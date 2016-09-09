@@ -4,7 +4,6 @@ import scalan.sql.ScalanSqlExp
 
 class RelationToIterBridge[+S <: ScalanSqlExp](val scalan: S) {
   import scalan._
-  import ScalanSqlBridge.FakeDepName
 
   // f takes a struct with (Int => Relation[...]) fields
   // returns a function from struct with (Int => Iter[...]) fields
@@ -12,8 +11,6 @@ class RelationToIterBridge[+S <: ScalanSqlExp](val scalan: S) {
     f.elem.eDom match {
       case se: StructElem[_] =>
         val iterInputElemFields = se.fields.map {
-          case (FakeDepName, IntElement) =>
-            (FakeDepName, IntElement)
           case (name, FuncElem(_, re: RelationElem[r, _])) =>
             val eR = re.eRow
             (name, FuncElem(IntElement, iterElement(eR)))
@@ -21,8 +18,6 @@ class RelationToIterBridge[+S <: ScalanSqlExp](val scalan: S) {
         val iterInputElem = structElement(iterInputElemFields)
         val resultFun = inferredFun(iterInputElem) { x =>
           val relationStructFields = se.fieldNames.map {
-            case FakeDepName =>
-              (FakeDepName, x.get[Int](FakeDepName))
             case name =>
               x.getUntyped(name) match {
                 case fieldF: RFunc[Int, Iter[a]] @unchecked =>

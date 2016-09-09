@@ -8,10 +8,6 @@ import SqlAST._
 import scala.util.Try
 import scalan.sql.{ColumnUseInfo, ScalanSqlExp, SingleTableColumnUseInfo}
 
-object ScalanSqlBridge {
-  val FakeDepName = "!_fake_dep_!"
-}
-
 class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   import scalan._
 
@@ -34,14 +30,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   protected def currentScopeName = resolver.currScope.name
 
-  // TODO remove this, introduce fakeDeps when lowering to Iters (if necessary!)
-  import ScalanSqlBridge.FakeDepName
-  val fakeDepField = (FakeDepName, IntElement)
-
   private val tableElems: Map[String, StructElem[Struct]] = {
     schema.tables.valuesIterator.map { table =>
       val fieldElems =
-        table.columns.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) } :+ fakeDepField
+        table.columns.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) }
       (table.name, structElement(fieldElems))
     }
   }.toMap
@@ -68,7 +60,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     val eInput = structElement(inputRowElems.map {
       case (name, eRow) => (name, scannableElement(eRow))
-    } :+ fakeDepField)
+    })
     val resultRelationFun = inferredFun(eInput) { x =>
       val tableScopes = tables.map {
         case (name, table) => (name, field(x, name))
@@ -195,31 +187,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   def generateScan(inputs: ExprInputs, scan: Scan): Plans[_] = {
-    def findFakeDep(x: Exp[_]): Option[Exp[Int]] = x.elem match {
-      case se: StructElem[_] =>
-        val x1 = x.asRep[Struct]
-        if (se.fields.exists(_._1 == FakeDepName)) {
-          Some(x1.get[Int](FakeDepName))
-        } else {
-          val relation = se.fields.iterator.map {
-            case (name, _) => findFakeDep(x1.getUntyped(name))
-          }.filter(_.isDefined)
-          if (relation.hasNext)
-            relation.next()
-          else
-            None
-        }
-      case PairElem(eFst: Elem[a], eSnd: Elem[b]) =>
-        val x1 = x.asRep[(a, b)]
-        findFakeDep(x1._1).orElse(findFakeDep(x1._2))
-      case _ =>
-        None
-    }
-
     val currentLambdaArg = this.currentLambdaArg(inputs)
-    val fakeDep = findFakeDep(currentLambdaArg).getOrElse {
-      !!!(s"Can't find $FakeDepName in ${currentLambdaArg.toStringWithType}")
-    }
+    val fakeDep = extraDeps(currentLambdaArg)
 
     val tableName = scan.tableName
     val table = resolver.table(tableName)

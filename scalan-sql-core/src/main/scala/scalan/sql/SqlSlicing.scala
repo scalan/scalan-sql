@@ -153,7 +153,7 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
           Seq[MarkedSym](x.marked(outMark))
 
         // Parameter doesn't really depend on its argument
-        case Parameter(_, _, _) =>
+        case _: Parameter[_] | _: ExtraDeps =>
           Seq.empty
 
         case _ =>

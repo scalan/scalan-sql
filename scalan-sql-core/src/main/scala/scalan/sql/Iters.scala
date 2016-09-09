@@ -71,10 +71,10 @@ trait Iters extends ScalanDsl {
     def seekIndex(keyValues: Rep[Array[Any]], operation: ComparisonOp): Rep[CursorIter[Row]] = delayInvoke
   }
 
-  abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
+  abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
 
   // TODO how to distinguish covering indices?
-  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
+  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.

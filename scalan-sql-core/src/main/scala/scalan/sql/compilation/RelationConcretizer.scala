@@ -5,7 +5,6 @@ import scalan.sql.ScalanSqlExp
 // could also extend bridge instead of having it as a parameter
 class RelationConcretizer[+S <: ScalanSqlExp](val bridge: ScalanSqlBridge[S]) {
   import bridge.scalan._
-  import ScalanSqlBridge.FakeDepName
 
   private def allFieldCombinations(fields: List[(String, List[Rep[_]])]): List[List[(String, Rep[_])]] = fields match {
     case Nil =>
@@ -25,8 +24,6 @@ class RelationConcretizer[+S <: ScalanSqlExp](val bridge: ScalanSqlBridge[S]) {
 //    case Def(l: Lambda[in, _]) =>
 //      val inputVar = l.x.asRep[Struct]
 //      val allCandidateFields: List[(String, List[Rep[_]])] = inputVar.fields.map {
-//        case (FakeDepName, _) =>
-//          FakeDepName -> List(toRep(0))
 //        case (name, field) =>
 //          field.elem match {
 //            case elem: ScannableElem[r, _] =>

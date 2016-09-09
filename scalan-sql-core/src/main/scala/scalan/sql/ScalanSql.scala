@@ -205,4 +205,9 @@ trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with ItersDslExp w
 
   // ctx ensures parameters are read inside lambdas only
   case class Parameter[A](index: Int, ctx: Exp[_], value: Any)(implicit val selfType: Elem[A]) extends Def[A]
+
+  case class ExtraDeps(deps: Seq[Rep[_]]) extends BaseDef[Unit] {
+    override def toString = s"ExtraDeps(${deps.mkString(", ")})"
+  }
+  def extraDeps(deps: Rep[_]*) = reifyObject(ExtraDeps(deps))
 }
