@@ -187,6 +187,9 @@ trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with KernelInputsD
   override def pack[A](x: A): String = x.toString
 }
 trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsDslExp with ItersDslExp with RelationsDslExp with ScalanSql with SqlSlicing {
+  // stops us from recalculating plans when rewriting functions
+  override def unfoldLambda[A,B](lam: Lambda[A,B], x: Exp[A]): Exp[B] = mirrorApply(lam, x)
+
   def toPlatformString[A](x: Rep[A]): Rep[String] = ToString1[A]()(x)
   case class ToString1[A]() extends UnOp[A, String]("toPlatformString", _.toString)
 
