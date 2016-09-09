@@ -10,7 +10,8 @@ object SqlBoilerplateTool extends BoilerplateTool {
       "scalan/sql/Iters.scala",
       "scalan/sql/Relations.scala",
       "scalan/sql/Scannables.scala",
-      "scalan/sql/Databases.scala"
+      "scalan/sql/Databases.scala",
+      "scalan/sql/KernelInputs.scala"
     ),
     baseContextTrait = "Scalan",
     seqContextTrait = "ScalanStd",

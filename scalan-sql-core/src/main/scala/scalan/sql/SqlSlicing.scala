@@ -166,6 +166,8 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
     case ie: IterElem[a,_] =>
       implicit val eA = ie.eRow
       IterMarking(KeyPath.None, AllMarking(eA)).asMark[T]
+    case kie: KernelInputElem[_] =>
+      KernelInputMarking.asMark[T]
     case _ =>
       super.createEmptyMarking(eT)
   }
@@ -174,9 +176,13 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
     case ae: IterElem[a,_] =>
       implicit val eA = ae.eRow
       IterMarking[a](KeyPath.All, AllMarking(eA)).asMark[T]
+    case kie: KernelInputElem[_] =>
+      KernelInputMarking.asMark[T]
     case _ =>
       super.createAllMarking(eT)
   }
+
+  val KernelInputMarking = AllBaseMarking(kernelInputElement)
 
   case class SlicedIter[A, B](source: RIter[B], override val innerMark: SliceMarking[A])
     extends Sliced1[A, B, Iter](IterMarking[A](KeyPath.All, innerMark)) {

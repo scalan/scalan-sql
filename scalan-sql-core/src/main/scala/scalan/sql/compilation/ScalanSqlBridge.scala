@@ -51,22 +51,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     val resolved = resolver.resolveOperator(parsedSql)
     val tables = allScans(resolved).toSeq.distinct
 
-    val inputRowElems = tables.map {
-      case (name, scan) =>
-        // TODO include only required columns
-        val eRow = tableElems.getOrElse(scan.tableName, !!!(s"Table $name not found"))
-        (name, eRow)
-    }
-
-    val eInput = structElement(inputRowElems.map {
-      case (name, eRow) => (name, scannableElement(eRow))
-    })
+    val eInput = kernelInputElement
     val resultRelationFun = inferredFun(eInput) { x =>
-      val tableScopes = tables.map {
-        case (name, table) => (name, field(x, name))
-      }
-      val scopes = tableScopes :+ (currentScopeName -> x)
-      val inputs = ExprInputs(scopes: _*)
+      val inputs = ExprInputs(currentScopeName -> x)
       val finalPlan: Exp[Relation[_]] = bestPlan(resolved, inputs)
       finalPlan
     }
