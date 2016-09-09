@@ -301,7 +301,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       // orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
       val goodForGroup = false // groupColumns.nonEmpty && columnNames.takeWhile(groupColumns.contains).nonEmpty
 
-      val iter = boundsLoop(columnNames) match {
+      val optPlan = boundsLoop(columnNames) match {
         case Some(bounds) =>
           val direction = goodForOrder.getOrElse(Ascending)
           val scannable = IndexScannable(table, index, scanId, direction, fakeDep)(eRow)
@@ -314,11 +314,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             IndexScannable(table, index, scanId, direction, fakeDep)(eRow).fullScan()
           }
       }
-
-      iter.map(iterBasedRelation(_))
+      optPlan
     }
 
-    val tablePlan = iterBasedRelation(TableScannable(table, scanId, Ascending: SortDirection, fakeDep)(eRow).fullScan())
+    val tablePlan = TableScannable(table, scanId, Ascending: SortDirection, fakeDep)(eRow).fullScan()
 
     tablePlan +: indexPlans
   }

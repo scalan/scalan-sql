@@ -13,14 +13,20 @@ trait Scannables extends ScalanDsl {
   trait Scannable[Row] extends Def[Scannable[Row]] {
     def eRow: Elem[Row]
 
-    def fullScan(): Rep[CursorIter[Row]] = delayInvoke
+    def sourceIter(): Rep[CursorIter[Row]]
+
+    def fullScan(): RRelation[Row] = IterBasedRelation(sourceIter())(eRow)
   }
 
-  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row]
+  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+    override def sourceIter() = TableIter(table, scanId, direction, fakeDep)
+  }
 
   abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Int])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+    override def sourceIter() = IndexIter(table, index, scanId, direction, fakeDep)
+
     // FIXME assumes all columns in index are ASC
-    def search(bounds: SearchBounds): RIter[Row] = {
+    def search(bounds: SearchBounds): RRelation[Row] = {
       val index0 = index.asValue
       val direction0 = direction.asValue
 
@@ -59,7 +65,8 @@ trait Scannables extends ScalanDsl {
       }
 
       val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
-      fullScan().seekIndex(repKeyValues, startOp).takeWhile(test)
+      val boundedIter = sourceIter().seekIndex(repKeyValues, startOp).takeWhile(test)
+      IterBasedRelation(boundedIter)
     }
   }
 }
@@ -87,7 +94,7 @@ trait ScannablesDslExp extends impl.ScannablesExp { self: ScalanSqlExp =>
     case elem: ScannableElem[_, _] =>
       m.getName match {
         case "fullScan" | "search" =>
-          iterElement(elem.eRow)
+          relationElement(elem.eRow)
         case _ => super.getResultElem(receiver, m, args)
       }
     case _ =>

@@ -284,6 +284,17 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
     extends AbsTableScannable[Row](table, scanId, direction, fakeDep)
 
   object TableScannableMethods {
+    object sourceIter {
+      def unapply(d: Def[_]): Option[Rep[TableScannable[Row]] forSome {type Row}] = d match {
+        case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[TableScannableElem[_]] && method.getName == "sourceIter" =>
+          Some(receiver).asInstanceOf[Option[Rep[TableScannable[Row]] forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[Rep[TableScannable[Row]] forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
   }
 
   def mkTableScannable[Row]
@@ -301,6 +312,18 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
     extends AbsIndexScannable[Row](table, index, scanId, direction, fakeDep)
 
   object IndexScannableMethods {
+    object sourceIter {
+      def unapply(d: Def[_]): Option[Rep[IndexScannable[Row]] forSome {type Row}] = d match {
+        case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[IndexScannableElem[_]] && method.getName == "sourceIter" =>
+          Some(receiver).asInstanceOf[Option[Rep[IndexScannable[Row]] forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[Rep[IndexScannable[Row]] forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
     object search {
       def unapply(d: Def[_]): Option[(Rep[IndexScannable[Row]], SearchBounds) forSome {type Row}] = d match {
         case MethodCall(receiver, method, Seq(bounds, _*), _) if receiver.elem.isInstanceOf[IndexScannableElem[_]] && method.getName == "search" =>
@@ -325,6 +348,18 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
   }
 
   object ScannableMethods {
+    object sourceIter {
+      def unapply(d: Def[_]): Option[Rep[Scannable[Row]] forSome {type Row}] = d match {
+        case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[ScannableElem[_, _]] && method.getName == "sourceIter" =>
+          Some(receiver).asInstanceOf[Option[Rep[Scannable[Row]] forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[Rep[Scannable[Row]] forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
     object fullScan {
       def unapply(d: Def[_]): Option[Rep[Scannable[Row]] forSome {type Row}] = d match {
         case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[ScannableElem[_, _]] && method.getName == "fullScan" =>
