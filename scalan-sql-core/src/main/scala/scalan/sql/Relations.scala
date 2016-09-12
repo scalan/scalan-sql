@@ -49,13 +49,12 @@ trait Relations extends ScalanDsl {
   abstract class IterBasedRelation[Row](val iter: RIter[Row])(implicit val eRow: Elem[Row]) extends Relation[Row] {
     override def map[B](f: Rep[Row => B]): RRelation[B] = iterBasedRelation(iter.map(f))
 
-    // TODO can this be done without `: Elem[B]`?
-//    override def flatMap[B](f: Rep[Row => Relation[B]]): RRelation[B] = {
-//      val f1 = f >> fun((_: RRelation[B]).iter)
-//      val iter1 = iter.flatMap(f1)
-//      implicit val eB = iter1.selfType1.eRow
-//      IterBasedRelation(iter1)
-//    }
+    override def flatMap[B](f: Rep[Row => Relation[B]]): RRelation[B] = {
+      val f1 = inferredFun(eRow) { x => f(x).iter }
+      val iter1 = iter.flatMap(f1)
+      implicit val eB = iter1.selfType1.eRow
+      IterBasedRelation(iter1)
+    }
 
     override def filter(f: Rep[Row => Boolean]): RRelation[Row] = IterBasedRelation(iter.filter(f))
 
