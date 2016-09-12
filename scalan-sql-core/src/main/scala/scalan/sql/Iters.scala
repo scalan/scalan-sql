@@ -68,6 +68,11 @@ trait Iters extends ScalanDsl {
   trait CursorIter[Row] extends Iter[Row] {
     def eRow: Elem[Row]
 
+    def table: Rep[Table]
+    def scanId: Rep[Int]
+    def direction: Rep[SortDirection]
+    def fakeDep: Rep[Unit]
+
     def seekIndex(keyValues: Rep[Array[Any]], operation: ComparisonOp): Rep[CursorIter[Row]] = delayInvoke
   }
 

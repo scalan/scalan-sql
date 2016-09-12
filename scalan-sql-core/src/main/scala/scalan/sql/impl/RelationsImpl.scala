@@ -508,6 +508,18 @@ trait RelationsExp extends ScalanExp with RelationsDsl {
       }
     }
 
+    object flatMap {
+      def unapply(d: Def[_]): Option[(Rep[IterBasedRelation[Row]], Rep[Row => Relation[B]]) forSome {type Row; type B}] = d match {
+        case MethodCall(receiver, method, Seq(f, _*), _) if receiver.elem.isInstanceOf[IterBasedRelationElem[_]] && method.getName == "flatMap" =>
+          Some((receiver, f)).asInstanceOf[Option[(Rep[IterBasedRelation[Row]], Rep[Row => Relation[B]]) forSome {type Row; type B}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[IterBasedRelation[Row]], Rep[Row => Relation[B]]) forSome {type Row; type B}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
     object filter {
       def unapply(d: Def[_]): Option[(Rep[IterBasedRelation[Row]], Rep[Row => Boolean]) forSome {type Row}] = d match {
         case MethodCall(receiver, method, Seq(f, _*), _) if receiver.elem.isInstanceOf[IterBasedRelationElem[_]] && method.getName == "filter" =>
