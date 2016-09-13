@@ -18,12 +18,12 @@ trait Scannables extends ScalanDsl {
     def fullScan(): RRelation[Row] = IterBasedRelation(sourceIter())(eRow)
   }
 
-  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    override def sourceIter() = TableIter(table, scanId, direction, fakeDep)
+  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+    override def sourceIter() = TableIter(table, scanId, direction, fakeDep, kernelInput)
   }
 
-  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    override def sourceIter() = IndexIter(table, index, scanId, direction, fakeDep)
+  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+    override def sourceIter() = IndexIter(table, index, scanId, direction, fakeDep, kernelInput)
 
     // FIXME assumes all columns in index are ASC
     def search(bounds: SearchBounds): RRelation[Row] = {

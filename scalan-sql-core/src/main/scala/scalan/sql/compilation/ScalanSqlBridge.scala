@@ -53,7 +53,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     val eInput = kernelInputElement
     val resultRelationFun = inferredFun(eInput) { x =>
-      val inputs = ExprInputs(currentScopeName -> x)
+      val inputs = ExprInputs(x, currentScopeName -> x)
       val finalPlan: Exp[Relation[_]] = bestPlan(resolved, inputs)
       finalPlan
     }
@@ -260,20 +260,20 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       val optPlan = boundsLoop(columnNames) match {
         case Some(bounds) =>
           val direction = goodForOrder.getOrElse(Ascending)
-          val scannable = IndexScannable(table, index, scanId, direction, fakeDep)(eRow)
+          val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
 
           Some(scannable.search(bounds))
         case None =>
           val optDirection = goodForOrder.orElse(if (goodForGroup) Some(Ascending) else None)
 
           optDirection.map { direction =>
-            IndexScannable(table, index, scanId, direction, fakeDep)(eRow).fullScan()
+            IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow).fullScan()
           }
       }
       optPlan
     }
 
-    val tablePlan = TableScannable(table, scanId, Ascending: SortDirection, fakeDep)(eRow).fullScan()
+    val tablePlan = TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan()
 
     tablePlan +: indexPlans
   }
@@ -334,7 +334,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
                   withContext(op) {
                     def column(column: ResolvedAttribute) =
-                      ExprInputs(currentScopeName -> x).resolveColumn(column)
+                      ExprInputs(inputs.kernelInput, currentScopeName -> x).resolveColumn(column)
 
                     columns match {
                       case Seq() =>
@@ -567,7 +567,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     sqlTypeToElem(resolver.getExprType(expr))
   }
 
-  case class ExprInputs(scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
+  case class ExprInputs(kernelInput: Exp[KernelInput], scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
     def addConstraints(predicate: Expression) = {
       val clauses = resolver.conjunctiveClauses(predicate)
       val extractedConstraints = clauses.flatMap {
@@ -650,7 +650,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   object ExprInputs {
-    def apply(scopes: (String, Exp[_])*): ExprInputs = new ExprInputs(scopes.toMap, ColumnUseInfo())
+    def apply(kernelInput: Exp[KernelInput], scopes: (String, Exp[_])*): ExprInputs =
+      new ExprInputs(kernelInput, scopes.toMap, ColumnUseInfo())
   }
 
 def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
