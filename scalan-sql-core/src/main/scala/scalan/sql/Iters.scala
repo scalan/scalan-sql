@@ -353,6 +353,10 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           res
         case _ => super.rewriteDef(d)
       }
+    case IterMethods.filter(iter: RIter[a], Def(ConstantLambda(c))) =>
+      IF (c) THEN iter ELSE Iter.empty(iter.selfType1.eRow)
+    case IterMethods.takeWhile(iter: RIter[a], Def(ConstantLambda(c))) =>
+      IF (c) THEN iter ELSE Iter.empty(iter.selfType1.eRow)
 
     case _ => super.rewriteDef(d)
   }}
