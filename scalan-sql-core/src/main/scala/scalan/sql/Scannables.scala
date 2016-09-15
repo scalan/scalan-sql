@@ -64,8 +64,12 @@ trait Scannables extends ScalanDsl {
         }
       }
 
-      val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
-      val boundedIter = sourceIter().seekIndex(repKeyValues, startOp).takeWhile(test)
+      val boundedIter0 = if (keyValues.nonEmpty) {
+        val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
+        sourceIter().seekIndex(repKeyValues, startOp)
+      } else
+        sourceIter()
+      val boundedIter = boundedIter0.takeWhile(test)
       IterBasedRelation(boundedIter)
     }
   }
