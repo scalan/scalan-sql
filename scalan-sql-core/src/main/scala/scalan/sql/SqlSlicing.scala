@@ -165,7 +165,7 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
   override def createEmptyMarking[T](eT: Elem[T]): SliceMarking[T] = eT match {
     case ie: IterElem[a,_] =>
       implicit val eA = ie.eRow
-      IterMarking(KeyPath.None, AllMarking(eA)).asMark[T]
+      IterMarking(KeyPath.None, EmptyMarking(eA)).asMark[T]
     case kie: KernelInputElem[_] =>
       KernelInputMarking.asMark[T]
     case _ =>
