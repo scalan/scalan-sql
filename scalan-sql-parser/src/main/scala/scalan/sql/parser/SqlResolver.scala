@@ -350,8 +350,8 @@ class SqlResolver(val schema: Schema) {
     }
 
     def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
-      case ResolvedTableAttribute(`table`, `id`, index) =>
-        Some(Binding(scope.name, List(Index(index))))
+      case rta @ ResolvedTableAttribute(`table`, `id`, index) =>
+        Some(Binding(scope.name, List(Field(rta.name))))
       case ResolvedProjectedAttribute(parent: ResolvedAttribute, _, _) =>
         lookup(parent)
       case _ => None
