@@ -30,14 +30,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   protected def currentScopeName = resolver.currScope.name
 
-  private val tableElems: Map[String, StructElem[Struct]] = {
-    schema.tables.valuesIterator.map { table =>
-      val fieldElems =
-        table.columns.map { case Column(colName, colType, _) => (colName, sqlTypeToElem(colType)) }
-      (table.name, structElement(fieldElems))
-    }
-  }.toMap
-
   import resolver.withContext
 
   // could be moved into ExprInputs, but this allows to avoid accidental reuse (see assert below)
@@ -49,11 +41,18 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     reuseDetector = false
     val parsedSql = parser.parseSelect(query).operator
     val resolved = resolver.resolveOperator(parsedSql)
-    val tables = allScans(resolved).toSeq.distinct
+
+    val scanElems = allUsedAttributes(resolved).toSeq.groupBy(tableAttr => Scan(tableAttr.table.name, tableAttr.tableId)).map {
+      case (scan, attrs) =>
+        val attrsInOrder = attrs.distinct.sortBy(_.index)
+        val fields = attrsInOrder.map(a => (a.name, sqlTypeToElem(a.sqlType)))
+        (scan, structElement(fields))
+    }
 
     val eInput = kernelInputElement
+
     val resultRelationFun = inferredFun(eInput) { x =>
-      val inputs = ExprInputs(x, currentScopeName -> x)
+      val inputs = ExprInputs(x, scanElems, currentScopeName -> x)
       val finalPlan: Exp[Relation[_]] = bestPlan(resolved, inputs)
       finalPlan
     }
@@ -61,6 +60,14 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     resultRelationFun.setMetadata(QueryTextKey)(query)
 
     resultRelationFun
+  }
+
+  // finds all columns used in the expressions inside
+  def allUsedAttributes(op: Any): Iterator[ResolvedTableAttribute] = op match {
+    case rta: ResolvedTableAttribute => Iterator(rta)
+    case rpa: ResolvedProjectedAttribute => allUsedAttributes(rpa.parent)
+    case p: Product => p.productIterator.flatMap(allUsedAttributes)
+    case _ => Iterator.empty
   }
 
   def bestPlan(operator: Operator, inputs: ExprInputs) = {
@@ -91,16 +98,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
     }
     costs.sum
-  }
-
-  def scanIterName(s: Scan) = s"${s.tableName}{${s.id}}"
-
-  def allScans(op: Any): Iterator[(String, Scan)] = op match {
-    case s: Scan =>
-      Iterator(scanIterName(s) -> s)
-    case p: Product =>
-      p.productIterator.flatMap(allScans)
-    case _ => Iterator.empty
   }
 
   // there is at least one plan for any operator by construction, so calling `head` below should be safe
@@ -181,103 +178,105 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     val tableName = scan.tableName
     val table = resolver.table(tableName)
-    val eRow = tableElems(tableName)
-    val scanId = scan.id
+    inputs.scanElems(scan) match {
+      case eRow: Elem[a] =>
+        val scanId = scan.id
 
-    val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
+        val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
 
-    val allIndices = resolver.indices(scan.tableName)
+        val allIndices = resolver.indices(scan.tableName)
 
-    // TODO connect to inputs (take DB as argument?)
-    val indexPlans = allIndices.flatMap { index =>
-      val columns = index.columns
-      val columnNames = columns.map(_.name)
+        // TODO connect to inputs (take DB as argument?)
+        val indexPlans = allIndices.flatMap { index =>
+          val columns = index.columns
+          val columnNames = columns.map(_.name)
 
-      def boundsLoop(columnNames: List[String]): Option[SearchBounds] = columnNames match {
-        case name :: tail =>
-          allConstraints.get(name).flatMap { constraints =>
-            val constraintsWithExps = constraints.flatMap {
-              case (op, value) =>
-                // failures just mean out-of-scope values are used and so we can't use it in a scan
-                Try {
-                  val valueExp = generateExpr(value, inputs)
-                  (op, valueExp)
-                }.toOption
-            }.groupBy(_._1)
+          def boundsLoop(columnNames: List[String]): Option[SearchBounds] = columnNames match {
+            case name :: tail =>
+              allConstraints.get(name).flatMap { constraints =>
+                val constraintsWithExps = constraints.flatMap {
+                  case (op, value) =>
+                    // failures just mean out-of-scope values are used and so we can't use it in a scan
+                    Try {
+                      val valueExp = generateExpr(value, inputs)
+                      (op, valueExp)
+                    }.toOption
+                }.groupBy(_._1)
 
-            if (constraintsWithExps.nonEmpty) {
-              constraintsWithExps.get(Eq) match {
-                case Some(eqConstraints) =>
-                  // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
-                  val fixedValue = eqConstraints.head._2
+                if (constraintsWithExps.nonEmpty) {
+                  constraintsWithExps.get(Eq) match {
+                    case Some(eqConstraints) =>
+                      // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
+                      val fixedValue = eqConstraints.head._2
 
-                  boundsLoop(tail) match {
+                      boundsLoop(tail) match {
+                        case None =>
+                          Some(SearchBounds.fixedValue(fixedValue))
+                        case Some(bounds) =>
+                          Some(bounds.addFixedValue(fixedValue))
+                      }
                     case None =>
-                      Some(SearchBounds.fixedValue(fixedValue))
-                    case Some(bounds) =>
-                      Some(bounds.addFixedValue(fixedValue))
-                  }
-                case None =>
-                  def bound(isLower: Boolean) = {
-                    def bound1(isInclusive: Boolean) = {
-                      val op = (isLower, isInclusive) match {
-                        case (true, true) => GreaterEq
-                        case (true, false) => Greater
-                        case (false, true) => LessEq
-                        case (false, false) => Less
+                      def bound(isLower: Boolean) = {
+                        def bound1(isInclusive: Boolean) = {
+                          val op = (isLower, isInclusive) match {
+                            case (true, true) => GreaterEq
+                            case (true, false) => Greater
+                            case (false, true) => LessEq
+                            case (false, false) => Less
+                          }
+
+                          constraintsWithExps.get(op).map(_.map(_._2).reduce {
+                            (p1, p2) =>
+                              ordOp(p1, p2) {
+                                (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
+                              }
+                          })
+                        }.map(Bound(_, isInclusive))
+
+                        val inclusiveBound = bound1(true)
+                        val exclusiveBound = bound1(false)
+                        // TODO This is safe, but we can get a better bound if
+                        // both are defined, using staged IF and comparison
+                        exclusiveBound.orElse(inclusiveBound)
                       }
 
-                      constraintsWithExps.get(op).map(_.map(_._2).reduce {
-                        (p1, p2) =>
-                          ordOp(p1, p2) {
-                            (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
-                          }
-                      })
-                    }.map(Bound(_, isInclusive))
+                      val lowerBound = bound(true)
+                      val upperBound = bound(false)
 
-                    val inclusiveBound = bound1(true)
-                    val exclusiveBound = bound1(false)
-                    // TODO This is safe, but we can get a better bound if
-                    // both are defined, using staged IF and comparison
-                    exclusiveBound.orElse(inclusiveBound)
+                      Some(SearchBounds.range(lowerBound, upperBound))
                   }
-
-                  val lowerBound = bound(true)
-                  val upperBound = bound(false)
-
-                  Some(SearchBounds.range(lowerBound, upperBound))
+                } else
+                  None
               }
-            } else
-              None
+            case Nil => None
           }
-        case Nil => None
-      }
 
-      // FIXME goodForOrder/group can only be used after cost calculation is added
-      // TODO common prefix is enough, we need to add partial sorting primitives
-      val goodForOrder: Option[SortDirection] = None
-      // orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
-      val goodForGroup = false // groupColumns.nonEmpty && columnNames.takeWhile(groupColumns.contains).nonEmpty
+          // FIXME goodForOrder/group can only be used after cost calculation is added
+          // TODO common prefix is enough, we need to add partial sorting primitives
+          val goodForOrder: Option[SortDirection] = None
+          // orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
+          val goodForGroup = false // groupColumns.nonEmpty && columnNames.takeWhile(groupColumns.contains).nonEmpty
 
-      val optPlan = boundsLoop(columnNames) match {
-        case Some(bounds) =>
-          val direction = goodForOrder.getOrElse(Ascending)
-          val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
+          val optPlan = boundsLoop(columnNames) match {
+            case Some(bounds) =>
+              val direction = goodForOrder.getOrElse(Ascending)
+              val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
 
-          Some(scannable.search(bounds))
-        case None =>
-          val optDirection = goodForOrder.orElse(if (goodForGroup) Some(Ascending) else None)
+              Some(scannable.search(bounds))
+            case None =>
+              val optDirection = goodForOrder.orElse(if (goodForGroup) Some(Ascending) else None)
 
-          optDirection.map { direction =>
-            IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow).fullScan()
+              optDirection.map { direction =>
+                IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow).fullScan()
+              }
           }
-      }
-      optPlan
+          optPlan
+        }
+
+        val tablePlan = TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan()
+
+        tablePlan +: indexPlans
     }
-
-    val tablePlan = TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan()
-
-    tablePlan +: indexPlans
   }
 
   def generateJoin(join: Join, filter: Option[Expression], inputs: ExprInputs) = {
@@ -336,7 +335,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 def keyFun[A](elem: Elem[A], op: Operator, columns: Seq[ResolvedAttribute]) = inferredFun(elem) { x =>
                   withContext(op) {
                     def column(column: ResolvedAttribute) =
-                      ExprInputs(inputs.kernelInput, currentScopeName -> x).resolveColumn(column)
+                      inputs.copy(scopes = Map(currentScopeName -> x)).resolveColumn(column)
 
                     columns match {
                       case Seq() =>
@@ -569,7 +568,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     sqlTypeToElem(resolver.getExprType(expr))
   }
 
-  case class ExprInputs(kernelInput: Exp[KernelInput], scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
+  case class ExprInputs(kernelInput: Exp[KernelInput], scanElems: Map[Scan, StructElem[_]], scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
     def addConstraints(predicate: Expression) = {
       val clauses = resolver.conjunctiveClauses(predicate)
       val extractedConstraints = clauses.flatMap {
@@ -652,8 +651,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   object ExprInputs {
-    def apply(kernelInput: Exp[KernelInput], scopes: (String, Exp[_])*): ExprInputs =
-      new ExprInputs(kernelInput, scopes.toMap, ColumnUseInfo())
+    def apply(kernelInput: Exp[KernelInput], scanElems: Map[Scan, StructElem[_]], scopes: (String, Exp[_])*): ExprInputs =
+      new ExprInputs(kernelInput, scanElems, scopes.toMap, ColumnUseInfo())
   }
 
 def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
