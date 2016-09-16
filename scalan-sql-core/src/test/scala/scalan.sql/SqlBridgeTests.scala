@@ -114,6 +114,24 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
         |        where
         |            l_partkey = p_partkey)""".stripMargin)
   }
+
+  describe("star works") {
+    // TODO convert manual checks to real tests
+    it("on single table") {
+      // check this produces identity function with correct type
+      testQuery("select * from lineitem")
+    }
+
+    it("on single table with filter") {
+      // check this produces correct function with correct type (no `map` on Iters)
+      testQuery("select * from lineitem where l_linenumber = 1")
+    }
+
+    it("on join") {
+      // check that we get Relation[Nation ++ Region], not Relation[(Nation, Region)]
+      testQuery("select * from nation join region on n_regionkey = r_regionkey")
+    }
+  }
 }
 
 class RelationSqlBridgeTests extends AbstractSqlBridgeTests {

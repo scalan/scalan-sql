@@ -355,7 +355,7 @@ class SqlParser {
 
     protected lazy val select: Parser[Operator] =
       SELECT ~> DISTINCT.? ~
-        selectList ~
+        rep1sep(selectListElement, ",") ~
         (FROM ~> relations) ~
         (WHERE ~> expression).? ~
         (GROUP ~ BY ~> rep1sep(expression, ",")).? ~
@@ -365,11 +365,7 @@ class SqlParser {
         case d ~ p ~ r ~ f ~ g ~ h ~ o ~ l =>
           val base = r
           val withFilter = f.map(Filter(base, _)).getOrElse(base)
-          val withProjection = p match {
-            case None => withFilter
-            case Some(columns) =>
-              Project(withFilter, columns)
-          }
+          val withProjection = Project(withFilter, p)
           val withGroupBy = g.map(GroupBy(withProjection, _)).getOrElse(withProjection)
           val withDistinct = d.map(_ => Distinct(withGroupBy)).getOrElse(withGroupBy)
           val withHaving = h.map(Filter(withDistinct, _)).getOrElse(withDistinct)
@@ -378,10 +374,8 @@ class SqlParser {
           withLimit
       }
 
-    protected lazy val selectList: Parser[Option[List[ProjectionColumn]]] =
-      ("*" ^^^ None) | (repsep(projectionColumn, ",") ^^ { Some(_) })
-
-    protected lazy val projectionColumn: Parser[ProjectionColumn] =
+    protected lazy val selectListElement: Parser[SelectListElement] =
+      (ident <~ ".").? <~ "*" ^^ { UnresolvedStar(_) } |
       expression ~ (AS.? ~> ident.?) ^^ {
         case e ~ a => ProjectionColumn(e, a)
       }

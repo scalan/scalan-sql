@@ -134,9 +134,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       withContext(p) {
         generateOperator(p, inputs).map {
           case pExp: RRelation[a] @unchecked =>
-            assert(!columns.exists(resolver.containsAggregates),
+            // can't contain unresolved star, if it does will get a ClassCastException
+            val columns1 = columns.asInstanceOf[List[ProjectionColumn]]
+            assert(!columns1.exists(resolver.containsAggregates),
               "Aggregate columns in Project must be handled by SqlResolver")
-            val structLambda = generateStructLambdaExpr(p, columns, inputs)(pExp.elem.eRow).asRep[a => Any]
+            val structLambda = generateStructLambdaExpr(p, columns1, inputs)(pExp.elem.eRow).asRep[a => Any]
             pExp.map(structLambda)
         }
       }

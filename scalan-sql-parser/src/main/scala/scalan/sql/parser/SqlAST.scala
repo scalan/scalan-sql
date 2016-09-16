@@ -152,17 +152,25 @@ object SqlAST {
     override def toString = s"${p(parent)} AS $alias"
   }
 
-  case class ProjectionColumn(expr: Expression, alias: Option[String])
-  case class Project(parent: Operator, columns: List[ProjectionColumn]) extends Operator {
-    override def toString = {
-      val columns1 = columns.map {
-        case ProjectionColumn(expr, alias) => alias match {
-          case None => expr
-          case Some(a) => s"$expr AS $a"
-        }
-      }
-      s"$parent\nSELECT ${columns1.mkString(", ")}"
+  sealed trait SelectListElement
+  case class ProjectionColumn(expr: Expression, alias: Option[String]) extends SelectListElement {
+    def mapExpr(f: Expression => Expression) = {
+      val expr1 = f(expr)
+      copy(expr = expr1)
     }
+
+    override def toString = alias match {
+      case None => expr.toString
+      case Some(a) => s"$expr AS $a"
+    }
+  }
+  case class UnresolvedStar(qualifier: Option[String]) extends SelectListElement {
+    override def toString = qualifier.fold("*")(q => s"$q.*")
+  }
+
+  // after resolution, can only have ProjectionColumn
+  case class Project(parent: Operator, columns: List[SelectListElement]) extends Operator {
+    override def toString = s"$parent\nSELECT ${columns.mkString(", ")}"
   }
 
   case class Filter(parent: Operator, predicate: Expression) extends Operator {

@@ -44,7 +44,7 @@ class SqlResolver(val schema: Schema) {
     result
   }
 
-  def resolveAggregates(parent: Operator, groupedBy: ExprList, columns: List[ProjectionColumn]): Operator = {
+  def resolveAggregates(parent: Operator, groupedBy: ExprList, columns: List[SelectListElement]): Operator = {
     def simplifyAgg(x: Expression): Expression = x match {
       case AggregateExpr(Count, false, _) =>
         CountAllExpr
@@ -103,16 +103,18 @@ class SqlResolver(val schema: Schema) {
         throw new SqlException(s"Don't know how to extract aggregate parts from a ${expr.getClass.getSimpleName}")
     }
 
-    columns.find { c =>
-      val expr = c.expr
-      !(containsAggregates(expr) || groupedBy.contains(expr))
+    columns.find {
+      case ProjectionColumn(expr, _) =>
+        !(containsAggregates(expr) || groupedBy.contains(expr))
+      case UnresolvedStar(_) =>
+        true
     } match {
       case Some(projectionColumn) =>
         throw new SqlException(s"Non-aggregate column $projectionColumn in an aggregate query")
       case None =>
-        val normalizedColumns = columns.map { col =>
-          val normalized = simplifyAgg(col.expr)
-          col.copy(expr = normalized)
+        val normalizedColumns = columns.map {
+          case col: ProjectionColumn => col.mapExpr(simplifyAgg)
+          case _ => throw new SqlException("Impossible")
         }
 
         val aggregates = normalizedColumns.flatMap { col =>
@@ -122,7 +124,8 @@ class SqlResolver(val schema: Schema) {
         val aggregate = Aggregate(parent, groupedBy.map(resolveExpr), aggregates)
 
         withContext(aggregate) {
-          Project(aggregate, normalizedColumns.map(c => c.copy(expr = resolveExpr(c.expr))))
+          val resolvedColumns = normalizedColumns.map(_.mapExpr(resolveExpr))
+          Project(aggregate, resolvedColumns)
         }
     }
   }
@@ -151,10 +154,22 @@ class SqlResolver(val schema: Schema) {
     case Project(parent, columns) =>
       val parent1 = resolveOperator(parent)
       withContext(parent1) {
-        if (columns.exists(containsAggregates))
+        if (columns.exists {
+          case col: ProjectionColumn =>
+            containsAggregates(col)
+          case _: UnresolvedStar =>
+            false
+        })
           resolveAggregates(parent1, Nil, columns)
         else {
-          val columns1 = columns.map(col => col.copy(expr = resolveExpr(col.expr)))
+          val columns1 = columns.flatMap {
+            case ProjectionColumn(expr, alias) =>
+              List(ProjectionColumn(resolveExpr(expr), alias))
+            case UnresolvedStar(qualifier) =>
+              currScope.ctx.resolveStar(qualifier).getOrElse {
+                throw new SqlException(s"Can't resolve ${qualifier.fold("")(_ + ".")}*")
+              }
+          }
           Project(parent1, columns1)
         }
       }
@@ -325,6 +340,7 @@ class SqlResolver(val schema: Schema) {
   abstract class Context {
     def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute]
     def resolveAggregate(agg: AggregateExpr): Option[ResolvedAttribute] = None
+    def resolveStar(qualifier: Option[String]): Option[List[ProjectionColumn]]
     def lookup(resolved: ResolvedAttribute): Option[Binding]
     def lookup(unresolved: UnresolvedAttribute): Option[Binding] = resolveColumn(unresolved).flatMap(lookup)
 
@@ -333,20 +349,31 @@ class SqlResolver(val schema: Schema) {
 
   case object GlobalContext extends Context {
     def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = None
+    def resolveStar(qualifier: Option[String]) = None
     def lookup(resolved: ResolvedAttribute): Option[Binding] = None
   }
 
   case class TableContext(table: Table, id: Int) extends Context {
-    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] = {
-      val qualifier = ref.table
-      if (qualifier.isEmpty || qualifier == Some(table.name)) {
+    def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] =
+      ifQualifierMatches(ref.table) {
         table.columns.indexWhere(c => c.name == ref.name) match {
           case -1 => None
           case i =>
             Some(ResolvedTableAttribute(table, id, i))
         }
-      } else
-        None
+      }
+
+    def resolveStar(qualifier: Option[String]) =
+      ifQualifierMatches(qualifier) {
+        val projectionColumns = table.columns.indices.toList.map { i =>
+          val attr = ResolvedTableAttribute(table, id, i)
+          ProjectionColumn(attr, None)
+        }
+        Some(projectionColumns)
+      }
+
+    def ifQualifierMatches[A](qualifier: Option[String])(body: => Option[A]): Option[A] = {
+      if (qualifier.isEmpty || qualifier == Some(table.name)) body else None
     }
 
     def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
@@ -373,6 +400,14 @@ class SqlResolver(val schema: Schema) {
       }
     }
 
+    def resolveStar(qualifier: Option[String]) =
+      (outer.resolveStar(qualifier), inner.resolveStar(qualifier)) match {
+        case (None, None) =>
+          None
+        case (leftAttrs, rightAttrs) =>
+          Some(leftAttrs.getOrElse(Nil) ++ rightAttrs.getOrElse(Nil))
+      }
+
     def lookup(ref: ResolvedAttribute): Option[Binding] = {
       (outer.lookup(ref), inner.lookup(ref)) match {
         case (Some(b), None) =>
@@ -398,6 +433,13 @@ class SqlResolver(val schema: Schema) {
         case _ =>
           None
       }
+
+    def resolveStar(qualifier: Option[String]) = qualifier match {
+      case None | Some(`alias`) =>
+        parent.resolveStar(None)
+      case _ =>
+        parent.resolveStar(qualifier)
+    }
 
     def lookup(resolved: ResolvedAttribute): Option[Binding] =
       parent.lookup(resolved)
@@ -426,14 +468,20 @@ class SqlResolver(val schema: Schema) {
         case -1 =>
           None
         case i =>
-          val saveScope = currScope
+          val savedScope = currScope
           currScope = scope.copy(ctx = parent)
           val expr = columns(i).expr
-          val attr = ResolvedProjectedAttribute(expr, Some(ref.name), i)
-          currScope = saveScope
+          val attr = ResolvedProjectedAttribute(expr, Some(name), i)
+          currScope = savedScope
           Some(attr)
       }
     }
+
+    def resolveStar(qualifier: Option[String]) =
+      if (qualifier.isDefined)
+        parent.resolveStar(qualifier)
+      else
+        Some(columns)
 
     def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
       case ResolvedProjectedAttribute(_, _, i) =>
@@ -453,6 +501,9 @@ class SqlResolver(val schema: Schema) {
         case i =>
           Some(ResolvedProjectedAttribute(agg, None, i))
       }
+
+    // should this throw an exception instead?
+    def resolveStar(qualifier: Option[String]) = None
 
     override def lookup(resolved: ResolvedAttribute): Option[Binding] =
       groupedBy.indexOf(resolved) match {
@@ -475,7 +526,17 @@ class SqlResolver(val schema: Schema) {
       case OrderBy(p, by) => buildContext(p)
       case GroupBy(p, by) => buildContext(p) // FIXME remove
       case Filter(p, predicate) => buildContext(p)
-      case Project(p, columns) => ProjectContext(buildContext(p), columns)
+      case Project(p, columns) =>
+        val ctx1 = buildContext(p)
+        val columns1 = columns.flatMap {
+          case col: ProjectionColumn =>
+            List(col)
+          case star @ UnresolvedStar(qualifier) =>
+            ctx1.resolveStar(qualifier).getOrElse {
+              throw new SqlException(s"Can't resolve $star")
+            }
+        }
+        ProjectContext(ctx1, columns1)
       case Aggregate(p, groupedBy, aggregates) => AggregateContext(buildContext(p), groupedBy, aggregates)
       case TableAlias(p, a) => AliasContext(buildContext(p), a)
       case SubSelect(p) => buildContext(p)
@@ -591,7 +652,10 @@ class SqlResolver(val schema: Schema) {
     case OrderBy(p, by) => depends(on, p) || depends(on, by.map(_.expr))
     case Aggregate(p, groupedBy, columns) => depends(on, p) || depends(on, groupedBy) || depends(on, columns)
     case Filter(p, predicate) => depends(on, p) || depends(on, predicate)
-    case Project(p, columns) => depends(on, p) || depends(on, columns.map(_.expr))
+    case Project(p, columns) => depends(on, p) || depends(on, columns.map {
+      case col: ProjectionColumn => col.expr
+      case _: UnresolvedStar => throw new SqlException(s"$subquery has unresolved expression")
+    })
     case TableAlias(t, a) => depends(on, t)
     case SubSelect(p) => depends(on, p)
     case _ => false
