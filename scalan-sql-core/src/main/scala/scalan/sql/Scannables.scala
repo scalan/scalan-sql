@@ -23,6 +23,8 @@ trait Scannables extends ScalanDsl {
   }
 
   abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+    def isCovering: Boolean = Scannables.this.isCovering(table.asValue, index.asValue, eRow)
+
     override def sourceIter() = IndexIter(table, index, scanId, direction, fakeDep, kernelInput)
 
     // FIXME assumes all columns in index are ASC

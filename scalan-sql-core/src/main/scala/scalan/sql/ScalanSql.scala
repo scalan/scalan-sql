@@ -181,6 +181,17 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
     case GreaterEq =>
       ordOp(l, r)((ord, _) => OrderingGTEQ(ord))
   }
+
+  def isCovering(table: Table, index: Index, eRow: Elem[_]) = eRow match {
+    case se: StructElem[_] =>
+      val indexColumns = index.columns.map(_.name) ++ rowidColumn(table)
+
+      se.fieldNames.forall(indexColumns.contains)
+  }
+
+  def rowidColumn(table: Table) = table.columns.find {
+    c => c.ctype == IntType && c.constraints.exists(_.isInstanceOf[PrimaryKeyC])
+  }.map(_.name)
 }
 
 trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with KernelInputsDslStd with ItersDslStd with RelationsDslStd with ScalanSql {

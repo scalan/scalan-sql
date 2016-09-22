@@ -312,6 +312,8 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
     extends AbsIndexScannable[Row](table, index, scanId, direction, fakeDep, kernelInput)
 
   object IndexScannableMethods {
+    // WARNING: Cannot generate matcher for method `isCovering`: Method's return type Boolean is not a Rep
+
     object sourceIter {
       def unapply(d: Def[_]): Option[Rep[IndexScannable[Row]] forSome {type Row}] = d match {
         case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[IndexScannableElem[_]] && method.getName == "sourceIter" =>

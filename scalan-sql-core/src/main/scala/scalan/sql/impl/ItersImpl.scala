@@ -429,6 +429,7 @@ trait ItersExp extends ScalanExp with ItersDsl {
     extends AbsIndexIter[Row](table, index, scanId, direction, fakeDep, kernelInput)
 
   object IndexIterMethods {
+    // WARNING: Cannot generate matcher for method `isCovering`: Method's return type Boolean is not a Rep
   }
 
   def mkIndexIter[Row]

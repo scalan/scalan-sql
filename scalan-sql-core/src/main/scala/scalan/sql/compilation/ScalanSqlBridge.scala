@@ -1,7 +1,5 @@
 package scalan.sql.compilation
 
-import java.sql.Date
-
 import scala.runtime.IntRef
 import scalan.sql.parser.{SqlAST, SqlParser, SqlResolver}
 import SqlAST._
@@ -86,7 +84,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
           // TODO check how precise bounds are
           val index = is.index.asValue
-          if (index.isPrimaryKey)
+          if (index.isPrimaryKey || is.isCovering)
             1.0
           else if (index.isUnique)
             2.0

@@ -80,7 +80,9 @@ trait Iters extends ScalanDsl {
   abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
 
   // TODO how to distinguish covering indices?
-  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
+  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
+    def isCovering: Boolean = Iters.this.isCovering(table.asValue, index.asValue, eRow)
+  }
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.
