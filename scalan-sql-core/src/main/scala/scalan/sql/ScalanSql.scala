@@ -36,6 +36,7 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
 
   val QueryTextKey = MetaKey[String]("queryText")
 
+  //TODO v2 elements should refer to Schema
   implicit val sqlOperatorElem = new BaseElem[Operator](null)
   implicit val sqlExpressionElem = new BaseElem[Expression](null)
   implicit val tableElem = new BaseElem[Table](null)
@@ -52,9 +53,10 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
 
   val MaterializeKey = MetaKey[Unit]("materialize")
 
-  val keyFld = "key"
-  val valFld = "val"
-  def keyValElem(eK: Elem[_], eV: Elem[_]) = structElement(Seq(keyFld -> eK, valFld -> eV))
+  val KeyFieldName   = "key"
+  val ValueFieldName = "val"
+  def keyValElem(eK: Elem[_], eV: Elem[_]) =
+    structElement(Seq(KeyFieldName -> eK, ValueFieldName -> eV))
 
   def pack[A](x: Rep[A]): Rep[String]
 
@@ -83,6 +85,7 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
 
   private case class LRHS[A](l: Rep[A], r: Rep[A], elem: Elem[A])
 
+  // TODO this can be moved to scalan-core and generalized for UDTs using Converters
   // brings l and r to the same type
   private def widen[A, B](l: Rep[A], r: Rep[B]): LRHS[_] = {
     implicit val eL = rep_getElem(l)
@@ -97,14 +100,14 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
             val l1 = field(l.asRep[Struct], 0)
             widen(l1, r)
           } else {
-            !!!(s"Arithmetic operation on a multi-field struct $l: ${eL.name}", l, r)
+            !!!(s"Widening is not defined for a multi-field struct $l: ${eL.name}", l, r)
           }
         case (_, StructElem(_, fields)) =>
           if (fields.length == 1) {
             val r1 = field(r.asRep[Struct], 0)
             widen(l, r1)
           } else {
-            !!!(s"Arithmetic operation on a multi-field struct $r: ${eR.name}", l, r)
+            !!!(s"Widening is not defined for a multi-field struct $r: ${eR.name}", l, r)
           }
         // zipWith for two iterators?
         case (eL: RelationElem[a, _], _) =>
@@ -143,6 +146,7 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
           implicit val numL = getNumeric(eL)
           LRHS(l.toInt, r.asRep[Int], IntElement)
         // Dates and times are represented as strings in SQLite
+        // TODO v2 remove SQLite dependence
         case (DateElement | TimeElement | TimestampElement, StringElement) =>
           LRHS(l.asRep[String], r.asRep[String], StringElement)
         case (StringElement, DateElement | TimeElement | TimestampElement) =>
@@ -152,7 +156,7 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
         case (CharElement, StringElement) =>
           LRHS(l.toStringRep, r.asRep[String], StringElement)
         case _ =>
-          !!!(s"No common numeric type for $l: ${eL.name} and $r: ${eR.name}", l, r)
+          !!!(s"No common type for $l: ${eL.name} and $r: ${eR.name}", l, r)
       }
   }
 
@@ -185,7 +189,6 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
   def isCovering(table: Table, index: Index, eRow: Elem[_]) = eRow match {
     case se: StructElem[_] =>
       val indexColumns = index.columns.map(_.name) ++ rowidColumn(table)
-
       se.fieldNames.forall(indexColumns.contains)
   }
 
@@ -198,12 +201,15 @@ trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with KernelInputsD
   override def pack[A](x: A): String = x.toString
 }
 trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsDslExp with ItersDslExp with RelationsDslExp with ScalanSql with SqlSlicing {
-  // stops us from recalculating plans when rewriting functions
+
+  // this override is to avoid HOAS-style invocation of lambdas stored in Lambda.f
+  // otherwise, it stops us from recalculating plans when rewriting functions
   override def unfoldLambda[A,B](lam: Lambda[A,B], x: Exp[A]): Exp[B] = mirrorApply(lam, x)
 
   def toPlatformString[A](x: Rep[A]): Rep[String] = ToString1[A]()(x)
   case class ToString1[A]() extends UnOp[A, String]("toPlatformString", _.toString)
 
+  //TODO v2 this is only correct for structs of the same type (field names are not part of the key)
   override def pack[A](x: Rep[A]) = x.elem.asInstanceOf[TypeDesc] match {
     case StructElem(_, fieldElems) =>
       val separator = toRep("|||")
@@ -218,7 +224,8 @@ trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsD
   }
 
   // ctx ensures parameters are read inside lambdas only
-  case class Parameter[A](index: Int, ctx: Exp[_], value: Any)(implicit val selfType: Elem[A]) extends Def[A]
+  case class Parameter[A](index: Int, ctx: Exp[_], value: Any)
+                         (implicit val selfType: Elem[A]) extends Def[A]
 
   case class ExtraDeps(deps: Seq[Rep[_]]) extends BaseDef[Unit] {
     override def toString = s"ExtraDeps(${deps.mkString(", ")})"
