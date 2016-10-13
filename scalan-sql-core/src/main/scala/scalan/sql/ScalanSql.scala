@@ -209,7 +209,6 @@ trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsD
   def toPlatformString[A](x: Rep[A]): Rep[String] = ToString1[A]()(x)
   case class ToString1[A]() extends UnOp[A, String]("toPlatformString", _.toString)
 
-  //TODO v2 this is only correct for structs of the same type (field names are not part of the key)
   override def pack[A](x: Rep[A]) = x.elem.asInstanceOf[TypeDesc] match {
     case StructElem(_, fieldElems) =>
       val separator = toRep("|||")
