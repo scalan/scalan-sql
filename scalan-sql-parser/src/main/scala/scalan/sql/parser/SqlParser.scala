@@ -6,7 +6,7 @@ import scala.util.parsing.combinator.syntactical.StandardTokenParsers
 import scala.util.parsing.input.CharArrayReader.EofCh
 import SqlAST._
 import scala.util.Sorting
-import scala.util.parsing.input.NoPosition
+import scala.util.parsing.input.{NoPosition, Positional}
 
 // see http://savage.net.au/SQL/sql-2003-2.bnf.html for full SQL grammar
 class SqlParser {
@@ -41,7 +41,7 @@ class SqlParser {
     Schema(tables, indicesByTable)
   }
 
-  def parseSelect(sql: String) = grammar.select(sql)
+  def parseSelect(sql: String, turnLiteralsIntoParameters: Boolean) = grammar.select(sql, turnLiteralsIntoParameters)
 
   class SqlLexical(val keywords: Seq[String]) extends StdLexical {
 
@@ -224,19 +224,35 @@ class SqlParser {
       case res => throw SqlException(res.toString)
     }
 
-    def select(sql: String): SelectStmt = phrase(selectStmt)(new lexical.Scanner(sql)) match {
+    def select(sql: String, turnLiteralsIntoParameters: Boolean): SelectStmt = phrase(selectStmt)(new lexical.Scanner(sql)) match {
       case Success(res, _) =>
+        def allParameters(x: Any): Iterator[Parameter] = x match {
+          case param: Parameter => Iterator(param)
+          case p: Product => p.productIterator.flatMap(allParameters)
+          case _ => Iterator.empty
+        }
+
         def allLiterals(x: Any): Iterator[Literal] = x match {
           case l: Literal => Iterator(l)
           case p: Product => p.productIterator.flatMap(allLiterals)
           case _ => Iterator.empty
         }
 
-        val literals = allLiterals(res).filter(_.pos != NoPosition).toArray
-        Sorting.quickSort(literals)(Ordering.fromLessThan(_.pos < _.pos))
-        for (i <- literals.indices) {
-          literals(i).index = Some(i)
+        def sortByPositionInPlace(arr: Array[_ <: NeedsOrderingByPosition]) = {
+          Sorting.quickSort(arr)(Ordering.fromLessThan(_.pos < _.pos))
+          for (i <- arr.indices) {
+            arr(i).index = Some(i)
+          }
         }
+
+        val parameters = allParameters(res).toArray
+        if (parameters.nonEmpty) {
+          sortByPositionInPlace(parameters)
+        } else if (turnLiteralsIntoParameters) {
+          val literals = allLiterals(res).filter(_.pos != NoPosition).toArray
+          sortByPositionInPlace(literals)
+        }
+
         res
       case res => throw SqlException(res.toString)
     }
@@ -570,6 +586,8 @@ class SqlParser {
         | (CURRENT_DATE | CURRENT_TIME | CURRENT_TIMESTAMP) ^^ { kw => FuncExpr(kw.str.toLowerCase, Nil) }
         )
 
+    protected lazy val parameter: Parser[Expression] = "?" ^^ { _ => Parameter() }
+
     protected lazy val basicLiteral: Parser[Literal] =
       positioned(numericLiteral
         | booleanLiteral
@@ -616,6 +634,7 @@ class SqlParser {
 
     protected lazy val baseExpression: PackratParser[Expression] =
       (literal
+        | parameter
         | cast
         | "(" ~> expression <~ ")"
         | function

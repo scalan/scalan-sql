@@ -34,10 +34,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   // Plus ExprInputs would have to be threaded through more than now
   private var reuseDetector = true
 
-  def sqlQueryExp(query: String) = {
+  // TODO should default for turnLiteralsIntoParameters be false? Or read from config?
+  def sqlQueryExp(query: String, turnLiteralsIntoParameters: Boolean = true) = {
     assert(reuseDetector, "Instance of ScalanSqlBridge is being reused, please create a new one (based on a separate Scalan cake) for each query instead")
     reuseDetector = false
-    val parsedSql = parser.parseSelect(query).operator
+    val parsedSql = parser.parseSelect(query, turnLiteralsIntoParameters).operator
     val resolved = resolver.resolveOperator(parsedSql)
 
     val scanElems = allUsedAttributes(resolved).toSeq.groupBy(tableAttr => Scan(tableAttr.table.name, tableAttr.tableId)).map {
@@ -709,7 +710,9 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       patternMatch(l, r, escape, inputs)
     case l @ Literal(v, t) =>
       val elem = sqlTypeToElem(t)
-      // non-null literals in queries are replaced by parameters
+      // non-null literals in queries are replaced by parameters, if
+      // turnLiteralsIntoParameters was passed to sqlQueryExp. Only
+      // in this case l.index will be Some(i) (see SqlGrammar#parseSelect).
       val currentLambdaArg = this.currentLambdaArg(inputs)
       l.index match {
         case Some(i) =>
@@ -717,7 +720,10 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
         case None =>
           toRep(v)(elem.asElem[Any])
       }
-
+    case p: SqlAST.Parameter =>
+      val currentLambdaArg = this.currentLambdaArg(inputs)
+      val i = p.index.getOrElse { !!!("Parameter doesn't have an index") }
+      Parameter(i, currentLambdaArg, null)(AnyElement)
     case NullLiteral =>
       !!!("Nulls aren't supported")
     // if we ever support null, how to determine type here?
@@ -827,6 +833,4 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       } ELSE
         generateCaseWhen(e, inputs).asRep[Any]
   }
-
-  // FIXME SqlCompiler.and doesn't check the literal's value
 }

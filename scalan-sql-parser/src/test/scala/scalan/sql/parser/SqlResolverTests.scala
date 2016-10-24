@@ -14,7 +14,7 @@ class SqlResolverTests extends BaseNestedTests {
     TPCH.allQueries.foreach {
       case (name, query) =>
         it(name) {
-          val unresolved = parser.parseSelect(query.sql).operator
+          val unresolved = parser.parseSelect(query.sql, turnLiteralsIntoParameters = true).operator
 
           val resolved = resolver.resolveOperator(unresolved)
 

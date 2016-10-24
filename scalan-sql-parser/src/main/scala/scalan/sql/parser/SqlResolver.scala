@@ -83,7 +83,7 @@ class SqlResolver(val schema: Schema) {
         extractAggregateExprs(opd)
       case NotExpr(opd) =>
         extractAggregateExprs(opd)
-      case Literal(v, t) =>
+      case _: Literal | _: Parameter =>
         Nil
       case CastExpr(exp, typ) =>
         extractAggregateExprs(exp)
@@ -293,7 +293,7 @@ class SqlResolver(val schema: Schema) {
       CastExpr(resolveExpr(expr), to)
     case CaseWhenExpr(list) =>
       CaseWhenExpr(list.map(resolveExpr))
-    case Literal(_, _) | NullLiteral | _: ResolvedAttribute =>
+    case Literal(_, _) | NullLiteral | _: ResolvedAttribute | _: Parameter =>
       expr
     case unresolved: UnresolvedAttribute =>
       currScope.resolve(unresolved)
@@ -544,7 +544,8 @@ class SqlResolver(val schema: Schema) {
     }
   }
 
-  def commonType(left: ColumnType, right: ColumnType): ColumnType = {
+  // op is unused here, but may be used in overrides (some DBs use + for string concatenation)
+  def commonArithmeticType(op: ArithOp, left: ColumnType, right: ColumnType): ColumnType = {
     if (left == right)
       left
     else if (left == DoubleType || right == DoubleType)
@@ -553,8 +554,8 @@ class SqlResolver(val schema: Schema) {
       BigIntType
     else if (left == IntType || right == IntType)
       IntType
-    else if (left.isInstanceOf[StringType] || right.isInstanceOf[StringType])
-      BasicStringType
+    else if (left.isInstanceOf[StringType] || right.isInstanceOf[StringType] || left == AnyType || right == AnyType)
+      AnyNumberType
     else throw SqlException("Incompatible types " + left.sqlName + " and " + right.sqlName)
   }
 
@@ -564,8 +565,8 @@ class SqlResolver(val schema: Schema) {
         op match {
           case _: LogicOp | _: ComparisonOp =>
             BoolType
-          case _: ArithOp =>
-            commonType(getExprType(l), getExprType(r))
+          case op: ArithOp =>
+            commonArithmeticType(op, getExprType(l), getExprType(r))
           case Concat => BasicStringType
         }
       case LikeExpr(l, r, escape) => BoolType
@@ -582,6 +583,7 @@ class SqlResolver(val schema: Schema) {
       case CastExpr(e, t) => t
       case SelectExpr(s) => DoubleType
       case FuncExpr(name, args) => funcType(name, args)
+      case Parameter() => AnyType
       case tableAttribute: ResolvedTableAttribute => tableAttribute.sqlType
       case ResolvedProjectedAttribute(parent, _, _) =>
         getExprType(parent)
@@ -598,7 +600,8 @@ class SqlResolver(val schema: Schema) {
     case "abs" | "trunc" | "truncate" | "round" | "power" | "mod" | "sign" | "ceiling" | "ceil" | "floor" | "nullif" =>
       getExprType(args.head)
     case "coalesce" =>
-      args.map(getExprType).reduce(commonType)
+      // TODO behavior may be wrong in some cases, but we don't support nulls yet anyway
+      args.map(getExprType).reduce(commonArithmeticType(Minus, _, _))
     case _ =>
       funcTypes.getOrElse(name,
         throw new IllegalArgumentException(s"Unknown return type for $name(${args.mkString(", ")}). Override `SqlCompiler.funcType` or call `registerFunctionType` if the type doesn't depend on arguments"))
@@ -671,7 +674,7 @@ class SqlResolver(val schema: Schema) {
         depends(op, l) || depends(op, r) || escape.exists(depends(op, _))
       case NegExpr(opd) => depends(op, opd)
       case NotExpr(opd) => depends(op, opd)
-      case Literal(v, t) => false
+      case _: Literal | _: Parameter => false
       case CastExpr(exp, typ) => depends(op, exp)
       case resolved: ResolvedAttribute => buildContext(op).lookup(resolved).isDefined
       case SelectExpr(s) => depends(op, s)

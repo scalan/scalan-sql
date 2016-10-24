@@ -88,6 +88,11 @@ object SqlAST {
     val sqlName = s"ENUM(${values.mkString(", ")})"
   }
 
+  // for parameters and other cases where type can't be determined
+  case object AnyType extends SimpleColumnType("ANY")
+  // for cases where type is unknown except it has to be numeric
+  case object AnyNumberType extends SimpleColumnType("NUMERIC")
+
   sealed trait TableConstraint
   case class PrimaryKeyT(columns: List[IndexedColumn], onConflict: OnConflict) extends TableConstraint
   case class UniqueT(columns: List[IndexedColumn], onConflict: OnConflict) extends TableConstraint
@@ -364,9 +369,12 @@ object SqlAST {
     override def toString = s"${p(expr)} AS $to"
   }
 
-  case class Literal(value: Any, tp: ColumnType) extends Expression with Positional {
+  trait NeedsOrderingByPosition extends Positional {
     // set in SqlParser.select
     var index: Option[Int] = None
+  }
+
+  case class Literal(value: Any, tp: ColumnType) extends Expression with NeedsOrderingByPosition {
     override def toString = {
       tp match {
         case _: StringType => s"'$value'"
@@ -382,6 +390,10 @@ object SqlAST {
   case object NullLiteral extends Expression {
     override def toString = "NULL"
     override def noParentheses = true
+  }
+
+  case class Parameter() extends Expression with NeedsOrderingByPosition {
+    override def toString = s"?${index.fold("")(_.toString)}"
   }
 
   // FIXME CaseWhenExpr(operand: Option[Expression], cases: List[(Expression, Expression)], default: Option[Expression])
