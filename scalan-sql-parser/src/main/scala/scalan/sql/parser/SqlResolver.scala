@@ -222,13 +222,6 @@ class SqlResolver(val schema: Schema) {
       throw new NotImplementedError(s"Can't resolve operator\n$op")
   }
 
-  def conjunctiveClauses(predicate: Expression): List[Expression] = predicate match {
-    case BinOpExpr(And, l, r) =>
-      conjunctiveClauses(l) ++ conjunctiveClauses(r)
-    case _ =>
-      List(predicate)
-  }
-
   def pushdownFilter(parent: Operator, predicate: Expression): Operator = {
     val clauses = conjunctiveClauses(predicate)
 
@@ -687,13 +680,5 @@ class SqlResolver(val schema: Schema) {
       case _ =>
         throw new SqlException(s"Can't check if $op depends on $expr")
     }
-  }
-
-  def underlyingTableColumn(expr: Expression): Option[ResolvedTableAttribute] = expr match {
-    case tableAttribute: ResolvedTableAttribute =>
-      Some(tableAttribute)
-    case projectedAttribute: ResolvedProjectedAttribute =>
-      underlyingTableColumn(projectedAttribute.parent)
-    case _ => None
   }
 }

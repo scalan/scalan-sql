@@ -203,20 +203,22 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           def boundsLoop(columnNames: List[String]): Option[SearchBounds] = columnNames match {
             case name :: tail =>
               allConstraints.get(name).flatMap { constraints =>
-                val constraintsWithExps = constraints.flatMap {
-                  case (op, value) =>
-                    // failures just mean out-of-scope values are used and so we can't use it in a scan
-                    Try {
-                      val valueExp = generateExpr(value, inputs)
-                      (op, valueExp)
-                    }.toOption
-                }.groupBy(_._1)
+                val constraintsWithExps = constraints.map {
+                  case (op, values) =>
+                    val valueExps = values.flatMap { value =>
+                      // failures just mean out-of-scope values are used and so we can't use it in a scan
+                      Try {
+                        generateExpr(value, inputs)
+                      }.toOption
+                    }
+                    (op, valueExps)
+                }.filter(_._2.nonEmpty)
 
                 if (constraintsWithExps.nonEmpty) {
                   constraintsWithExps.get(Eq) match {
                     case Some(eqConstraints) =>
                       // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
-                      val fixedValue = eqConstraints.head._2
+                      val fixedValue = eqConstraints.head
 
                       boundsLoop(tail) match {
                         case None =>
@@ -234,7 +236,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                             case (false, false) => Less
                           }
 
-                          constraintsWithExps.get(op).map(_.map(_._2).reduce {
+                          constraintsWithExps.get(op).map(_.reduce {
                             (p1, p2) =>
                               ordOp(p1, p2) {
                                 (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
@@ -585,51 +587,24 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   case class ExprInputs(kernelInput: Exp[KernelInput], scanElems: Map[Scan, StructElem[_]], scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
-    def addConstraints(predicate: Expression) = {
-      val clauses = resolver.conjunctiveClauses(predicate)
-      val extractedConstraints = clauses.flatMap {
-        case clause @ BinOpExpr(op: ComparisonOp, l, r) =>
-          (resolver.underlyingTableColumn(l), resolver.underlyingTableColumn(r)) match {
-            case (None, None) =>
-              Nil
-            case (Some(l1), None) =>
-              List((l1, (op, r)))
-            case (None, Some(r1)) =>
-              List((r1, (op.inverse, l)))
-            case (Some(l1), Some(r1)) =>
-              List(
-                (l1, (op, r1)),
-                (r1, (op.inverse, l1))
-              )
-          }
-        case _ =>
-          Nil
-      }
-
-      val newConstraints = extractedConstraints.foldLeft(columnUseInfo.constraints) {
-        case (map, (attr, ct)) =>
-          val currentConstraints = map.getOrElse(attr, Set.empty)
-          map.updated(attr, currentConstraints + ct)
-      }
-
-      copy(columnUseInfo = columnUseInfo.copy(constraints = newConstraints))
-    }
+    def addConstraints(predicate: Expression) =
+      copy(columnUseInfo = columnUseInfo.addConstraints(predicate))
 
     def orderByInfo(sortSpecs: List[SortSpec]) = {
       val orderBy = sortSpecs.map {
         case SortSpec(expr, direction, _) =>
-          (resolver.underlyingTableColumn(expr), direction)
+          (underlyingTableColumn(expr), direction)
       }.takeWhile(_._1.isDefined).map { case (opt, direction) => (opt.get, direction) }
       copy(columnUseInfo = columnUseInfo.copy(orderBy = orderBy))
     }
 
     def groupByInfo(expressions: List[Expression]) = {
-      val tableAttributes = expressions.flatMap(resolver.underlyingTableColumn).toSet
+      val tableAttributes = expressions.map(underlyingTableColumn).takeWhile(_.isDefined).map(_.get)
       copy(columnUseInfo = columnUseInfo.copy(groupBy = tableAttributes))
     }
 
     def withoutOrderAndGroupInfo =
-      copy(columnUseInfo = columnUseInfo.copy(orderBy = Nil, groupBy = Set.empty))
+      copy(columnUseInfo = columnUseInfo.copy(orderBy = Nil, groupBy = Nil))
 
     // TODO inline
     def resolveColumn(c: ResolvedAttribute) = {

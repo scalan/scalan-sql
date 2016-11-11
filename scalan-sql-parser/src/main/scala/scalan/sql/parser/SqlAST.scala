@@ -435,4 +435,21 @@ object SqlAST {
   }
 
   def Script(stmts: Statement*): Script = stmts.toList
+
+  type SqlOrdering = List[(ResolvedTableAttribute, SortDirection)]
+
+  def underlyingTableColumn(expr: Expression): Option[ResolvedTableAttribute] = expr match {
+    case tableAttribute: ResolvedTableAttribute =>
+      Some(tableAttribute)
+    case projectedAttribute: ResolvedProjectedAttribute =>
+      underlyingTableColumn(projectedAttribute.parent)
+    case _ => None
+  }
+
+  def conjunctiveClauses(predicate: Expression): List[Expression] = predicate match {
+    case BinOpExpr(And, l, r) =>
+      conjunctiveClauses(l) ++ conjunctiveClauses(r)
+    case _ =>
+      List(predicate)
+  }
 }
