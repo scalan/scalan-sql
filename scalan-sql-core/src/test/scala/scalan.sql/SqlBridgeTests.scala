@@ -87,6 +87,18 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
     }
   }
 
+  describe("order by index") {
+    it("with project") {
+      // must be a full (covering) index scan, no sorting
+      testQuery("select c_name, c_custkey from customer order by c_name")
+    }
+
+    it("inverted") {
+      // must be a full (non-covering) reverse index scan, no sorting
+      testQuery("select c_name, c_custkey, c_address from customer order by c_name desc")
+    }
+  }
+
   it("mapReduce with empty value") {
     testQuery(
       """select

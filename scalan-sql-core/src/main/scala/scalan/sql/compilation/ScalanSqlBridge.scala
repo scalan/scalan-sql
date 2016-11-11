@@ -4,7 +4,7 @@ import scala.runtime.IntRef
 import scalan.sql.parser.{SqlAST, SqlParser, SqlResolver}
 import SqlAST._
 import scala.util.Try
-import scalan.sql.{ColumnUseInfo, ScalanSqlExp, SingleTableColumnUseInfo}
+import scalan.sql.{ColumnUseInfo, ConstraintSet, ScalanSqlExp, SingleTableColumnUseInfo}
 
 class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   import scalan._
@@ -77,7 +77,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   def selectBestPlan[A](plans: Plans[A]) = plans.minBy(_.cost)
 
-  case class Plan[A](node: Exp[Relation[A]]) {
+  case class Plan[A](node: Exp[Relation[A]], constraints: ConstraintSet, ordering: SqlOrdering) {
     def elem = node.elem
     // TODO Fix cost calculation
     // for now just assume plan which has fewest scans (and most searches) is the best
@@ -96,6 +96,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               2.0
             else
               5.0
+          case RelationMethods.sort(_, _) | RelationMethods.sortBy(_, _) =>
+            10000.0
           case _ =>
             // obviously need to be more precise
             10.0
@@ -142,16 +144,23 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             assert(!columns1.exists(resolver.containsAggregates),
               "Aggregate columns in Project must be handled by SqlResolver")
             val structLambda = generateStructLambdaExpr(p, columns1, inputs)(pExp.elem.eRow).asRep[a => Any]
-            Plan(pExp.node.map(structLambda))
+            Plan(pExp.node.map(structLambda), pExp.constraints, pExp.ordering)
         }
       }
     case OrderBy(p, by) =>
       val inputs1 = inputs.orderByInfo(by)
       generateOperator(p, inputs1).map {
-        case pExp: Plan[a] @unchecked =>
-          val eRow = pExp.elem.eRow
-          val comparator = generateComparator(p, by, inputs1)(eRow)
-          Plan(pExp.node.sort(comparator))
+        case pPlan: Plan[a] @unchecked =>
+          val eRow = pPlan.elem.eRow
+          val guaranteedOrdering = pPlan.ordering
+          val desiredOrdering = sortSpecsToOrdering(by)
+          // TODO handle common prefixes between guaranteed and desired (https://github.com/scalan/scalan-sql/issues/7)
+          if (guaranteedOrdering.startsWith(desiredOrdering))
+            pPlan
+          else {
+            val comparator = generateComparator(p, by, inputs1)(eRow)
+            Plan(pPlan.node.sort(comparator), pPlan.constraints, desiredOrdering)
+          }
       }
     case TableAlias(operator, alias) =>
       generateOperator(operator, inputs)
@@ -165,8 +174,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   def generateFilter[A](plan: Plan[A], p: Operator, predicate: Expression, inputs: ExprInputs) = {
-    val f = generateLambdaExpr(p, predicate, inputs)(plan.elem.eRow).asRep[A => Boolean]
-    Plan(plan.node.filter(f))
+    plan.constraints.simplify(predicate) match {
+      case Some(simplified) =>
+        val f = generateLambdaExpr(p, simplified, inputs)(plan.elem.eRow).asRep[A => Boolean]
+        Plan(plan.node.filter(f), plan.constraints.addConstraints(simplified), plan.ordering)
+      case None =>
+        plan
+    }
   }
 
   private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
@@ -200,34 +214,33 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           val columns = index.columns
           val columnNames = columns.map(_.name)
 
-          def boundsLoop(columnNames: List[String]): Option[SearchBounds] = columnNames match {
+          def boundsLoop(columnNames: List[String]): Option[(SearchBounds, ConstraintSet)] = columnNames match {
             case name :: tail =>
               allConstraints.get(name).flatMap { constraints =>
                 val constraintsWithExps = constraints.map {
                   case (op, values) =>
-                    val valueExps = values.flatMap { value =>
+                    val valuesAndExps = values.flatMap { value =>
                       // failures just mean out-of-scope values are used and so we can't use it in a scan
                       Try {
-                        generateExpr(value, inputs)
+                        (value, generateExpr(value, inputs))
                       }.toOption
                     }
-                    (op, valueExps)
+                    (op, valuesAndExps)
                 }.filter(_._2.nonEmpty)
 
                 if (constraintsWithExps.nonEmpty) {
+                  val attr = ResolvedTableAttribute(table, scanId, name)
                   constraintsWithExps.get(Eq) match {
                     case Some(eqConstraints) =>
                       // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
-                      val fixedValue = eqConstraints.head
+                      val (fixedValue, fixedValueExp) = eqConstraints.head
+                      val newConstraint = BinOpExpr(Eq, attr, fixedValue)
+                      val (foundBounds, foundConstraints) =
+                        boundsLoop(tail).getOrElse((SearchBounds.empty, ConstraintSet.empty))
 
-                      boundsLoop(tail) match {
-                        case None =>
-                          Some(SearchBounds.fixedValue(fixedValue))
-                        case Some(bounds) =>
-                          Some(bounds.addFixedValue(fixedValue))
-                      }
+                      Some((foundBounds.addFixedValue(fixedValueExp), foundConstraints.addConstraints(newConstraint)))
                     case None =>
-                      def bound(isLower: Boolean) = {
+                      def bound(isLower: Boolean): (Option[Bound], ConstraintSet) = {
                         def bound1(isInclusive: Boolean) = {
                           val op = (isLower, isInclusive) match {
                             case (true, true) => GreaterEq
@@ -236,25 +249,40 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                             case (false, false) => Less
                           }
 
-                          constraintsWithExps.get(op).map(_.reduce {
-                            (p1, p2) =>
-                              ordOp(p1, p2) {
-                                (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
-                              }
-                          })
-                        }.map(Bound(_, isInclusive))
+                          constraintsWithExps.get(op).map { valuesAndExps =>
+                            val newConstraints = valuesAndExps.map {
+                              case (sqlExpr, _) => BinOpExpr(op, attr, sqlExpr)
+                            }
+                            val boundExp = valuesAndExps.map(_._2).reduce {
+                              (p1, p2) =>
+                                ordOp(p1, p2) {
+                                  (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
+                                }
+                            }
+                            (Bound(boundExp, isInclusive), newConstraints)
+                          }
+                        }
 
                         val inclusiveBound = bound1(true)
                         val exclusiveBound = bound1(false)
                         // TODO This is safe, but we can get a better bound if
                         // both are defined, using staged IF and comparison
-                        exclusiveBound.orElse(inclusiveBound)
+                        exclusiveBound.orElse(inclusiveBound) match {
+                          case Some((bound, sqlConstraints)) =>
+                            val constraintSet = sqlConstraints.foldLeft(ConstraintSet.empty)(_.addConstraints(_))
+                            (Some(bound), constraintSet)
+                          case None =>
+                            (None, ConstraintSet.empty)
+                        }
                       }
 
-                      val lowerBound = bound(true)
-                      val upperBound = bound(false)
+                      val lowerBoundWithConstraints = bound(true)
+                      val upperBoundWithConstraints = bound(false)
 
-                      Some(SearchBounds.range(lowerBound, upperBound))
+                      val lowerBound = lowerBoundWithConstraints._1
+                      val upperBound = upperBoundWithConstraints._1
+                      val allConstraints = lowerBoundWithConstraints._2.union(upperBoundWithConstraints._2)
+                      Some(SearchBounds.range(lowerBound, upperBound), allConstraints)
                   }
                 } else
                   None
@@ -262,32 +290,55 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             case Nil => None
           }
 
-          // FIXME goodForOrder/group can only be used after cost calculation is added
-          // TODO common prefix is enough, we need to add partial sorting primitives
-          val goodForOrder: Option[SortDirection] = None
-          // orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
-          val goodForGroup = false // groupColumns.nonEmpty && columnNames.takeWhile(groupColumns.contains).nonEmpty
-
-          val optPlan = boundsLoop(columnNames) match {
-            case Some(bounds) =>
-              val direction = goodForOrder.getOrElse(Ascending)
-              val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
-              val plan = Plan(scannable.search(bounds))
-
-              Some(plan)
-            case None =>
-              val optDirection = goodForOrder.orElse(if (goodForGroup) Some(Ascending) else None)
-
-              optDirection.map { direction =>
-                Plan(IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow).fullScan())
+          // TODO common prefix of orderColumns or groupColumns with index columns is enough
+          // https://github.com/scalan/scalan-sql/issues/7
+          val goodForOrder: Option[SortDirection] = {
+            if (orderColumns.nonEmpty) {
+              List(Ascending, Descending).find { direction =>
+                val indexColumnsForDirection =
+                  columns.map(c => (c.name, c.direction.inverseIfDescending(direction)))
+                indexColumnsForDirection.startsWith(orderColumns)
               }
+            } else None
           }
-          optPlan
+          val goodForGroup = groupColumns.nonEmpty && columnNames.startsWith(groupColumns)
+
+          val optBounds = boundsLoop(columnNames)
+          if (optBounds.isDefined || goodForOrder.isDefined || goodForGroup) {
+            val direction = goodForOrder.getOrElse(Ascending)
+            val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
+            val (relation, constraints) = optBounds match {
+              case Some((bounds, constraints0)) =>
+                (scannable.search(bounds), constraints0)
+              case None =>
+                (scannable.fullScan(), ConstraintSet.empty)
+            }
+            val indexScanOrdering =
+              for (IndexedColumn(name, _, colDirection) <- index.columns)
+                yield (ResolvedTableAttribute(table, scanId, name), colDirection.inverseIfDescending(direction))
+            val plan = Plan(relation, constraints, indexScanOrdering)
+            Some(plan)
+          } else
+            None
         }
 
-        val tablePlan = Plan(TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan())
+        val relation =
+          TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan()
+
+        val tablePlan = Plan(relation, ConstraintSet.empty, tableScanOrdering(table, scanId))
 
         tablePlan +: indexPlans
+    }
+  }
+
+  // TODO this depends on the database, make abstract
+  // This implementation is for SQLite (and MySQL?)
+  def tableScanOrdering(table: Table, scanId: Int): SqlOrdering = {
+    rowidColumn(table) match {
+      case None =>
+        Nil
+      case Some(name) =>
+        List((ResolvedTableAttribute(table, scanId, name), Ascending))
     }
   }
 
@@ -371,13 +422,19 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 }
 
                 def hashJoinPlans[A, B, K](left: Plan[A], right: Plan[B], leftKeyFun: Rep[A => K], rightKeyFun: Rep[B => K]) =
-                  Plan(left.node.hashJoin(right.node, leftKeyFun, rightKeyFun, leftIsOuter))
+                  Plan(
+                    left.node.hashJoin(right.node, leftKeyFun, rightKeyFun, leftIsOuter),
+                    left.constraints.union(right.constraints),
+                    left.ordering)
 
                 if (leftIsOuter)
                   hashJoinPlans(_, innerPlan, outerKeyFun, innerKeyFun)
                 else
                   hashJoinPlans(innerPlan, _, innerKeyFun, outerKeyFun)
               }
+
+              var constraints1: ConstraintSet = ConstraintSet.empty
+              var ordering1: SqlOrdering = Nil
 
               val flatMapArg = withContext(outer) {
                 inferredFun(outerRowElem) { x =>
@@ -388,12 +445,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                   val inner1 = resolver.pushdownFilter(inner, condition1)
 
                   val inner1Plan = bestPlan(inner1, innerInputs + (currentScopeName -> x)).asInstanceOf[Plan[b]]
+                  constraints1 = inner1Plan.constraints
+                  ordering1 = inner1Plan.ordering
 
                   val g = inferredFun(innerRowElem) { y =>
                     if (leftIsOuter) (x, y) else (y, x)
                   }
 
-                  // FIXME use metadata or vars to get constraints and ordering out
                   inner1Plan.node.map(g)
                 }
               }
@@ -406,7 +464,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                     generateFilter(hashJoinUnfiltered, join, pred, inputs)
                 }
 
-                val nestedLoopJoin = Plan(outerPlan.node.flatMap(flatMapArg))
+                val nestedLoopJoin = Plan(
+                  outerPlan.node.flatMap(flatMapArg),
+                  outerPlan.constraints.union(constraints1),
+                  outerPlan.ordering ++ ordering1
+                )
                 Iterator[Plan[_]](hashJoin, nestedLoopJoin)
               }
           }
@@ -519,9 +581,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             //              }
           }
 
-          Plan(pExp.node.mapReduce(mapKey, newValue, reduce))
+          // Do we need to filter out constraints on aggregated out columns?
+
+          // TODO Use information that input is already fully or partially sorted by columns we aggregate on
+          // (https://github.com/scalan/scalan-sql/issues/7)
+          Plan(pExp.node.mapReduce(mapKey, newValue, reduce), pExp.constraints, Nil)
         } else {
-          Plan(pExp.node.reduce(reduce, newValue))
+          Plan(pExp.node.reduce(reduce, newValue), ConstraintSet.empty, Nil)
         }
     }
   }
@@ -591,10 +657,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       copy(columnUseInfo = columnUseInfo.addConstraints(predicate))
 
     def orderByInfo(sortSpecs: List[SortSpec]) = {
-      val orderBy = sortSpecs.map {
-        case SortSpec(expr, direction, _) =>
-          (underlyingTableColumn(expr), direction)
-      }.takeWhile(_._1.isDefined).map { case (opt, direction) => (opt.get, direction) }
+      val orderBy = sortSpecsToOrdering(sortSpecs)
       copy(columnUseInfo = columnUseInfo.copy(orderBy = orderBy))
     }
 
@@ -639,6 +702,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     def +(pair: (String, Exp[_])) = copy(scopes = scopes + pair)
 
     def apply(name: String) = scopes(name)
+  }
+
+  def sortSpecsToOrdering(sortSpecs: List[SortSpec]): List[(ResolvedTableAttribute, SortDirection)] = {
+    sortSpecs.map {
+      case SortSpec(expr, direction, _) =>
+        (underlyingTableColumn(expr), direction)
+    }.takeWhile(_._1.isDefined).map { case (opt, direction) => (opt.get, direction) }
   }
 
   object ExprInputs {

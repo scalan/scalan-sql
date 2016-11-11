@@ -87,7 +87,7 @@ trait ScannablesDsl extends impl.ScannablesAbs { self: ScalanSql =>
   }
 
   object SearchBounds {
-    def fixedValue(value: Rep[_]) = SearchBounds(List(value), None, None)
+    val empty = SearchBounds(Nil, None, None)
     def range(lowerBound: Option[Bound], upperBound: Option[Bound]) = SearchBounds(Nil, lowerBound, upperBound)
   }
 }
