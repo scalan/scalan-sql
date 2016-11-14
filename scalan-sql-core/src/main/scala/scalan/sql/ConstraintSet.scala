@@ -5,6 +5,26 @@ import scalan.sql.parser.SqlAST._
 case class Constraint(lhs: ResolvedTableAttribute, op: ComparisonOp, rhs: Expression)
 
 class ConstraintSet private (val asMap: Map[ResolvedTableAttribute, Map[ComparisonOp, Set[Expression]]]) {
+  override def toString = {
+    if (asMap.isEmpty)
+      "ConstraintSet {}"
+    else {
+      val parts = asMap.map {
+        case (lhs, v) =>
+          v.map {
+            case (op, rhses) => s"${op.name} ${rhses.mkString(", ")};"
+          }.mkString(s"$lhs ", " ", "")
+      }
+      val totalLength = parts.iterator.map(_.length).sum
+      val (afterOpening, separator, beforeClosing) =
+        if (totalLength < 70)
+          (" ", " ", " ")
+        else
+          ("\n  ", "\n  ", "\n")
+      parts.mkString("ConstraintSet {" + afterOpening, separator, beforeClosing + "}")
+    }
+  }
+
   // only call when && are eliminated
   private def extractConstraints(clause: Expression) = clause match {
     case BinOpExpr(op: ComparisonOp, l, r) =>
