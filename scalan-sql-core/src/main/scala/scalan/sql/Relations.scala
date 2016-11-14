@@ -36,7 +36,9 @@ trait Relations extends ScalanDsl {
                        ): RRelation[Struct] = delayInvoke
 
     /** Use instead of mapReduce when input is sorted by some prefix of the grouping.
-      * @param prefixComparator returns true when two rows belong to the same group */
+      * @param prefixComparator returns true when two rows belong to the same group
+      * @tparam K will be a pair of structs: group key and hash key (second may be empty)
+      */
     def partialMapReduce[K, V](prefixComparator: Rep[((Row, Row)) => Boolean],
                                mapKey: Rep[Row => K],
                                newValue: Rep[Thunk[V]],
@@ -97,7 +99,9 @@ trait Relations extends ScalanDsl {
                                         newValue: Rep[Thunk[V]],
                                         reduceValue: Rep[((V, Row)) => V]
                                        ): RRelation[Struct] = {
-      val iter1 = iter.partialMapReduce(prefixComparator, mapKey, fun[Row, String] { x => pack(mapKey(x)) }, newValue, reduceValue)
+      val packKey: Rep[(Row) => String] =
+        fun[Row, String] { x => pack(mapKey(x).asRep[(Struct, Struct)]._2) }
+      val iter1 = iter.partialMapReduce(prefixComparator, mapKey, packKey, newValue, reduceValue)
       iterBasedRelation(iter1)
     }
 

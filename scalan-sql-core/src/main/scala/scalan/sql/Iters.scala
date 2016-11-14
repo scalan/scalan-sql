@@ -50,7 +50,9 @@ trait Iters extends ScalanDsl {
                         ): RIter[Struct] = delayInvoke
 
     /** Use instead of mapReduce when input is sorted by some prefix of the grouping.
-      * @param prefixComparator returns true when two rows belong to the same group */
+      * @param prefixComparator returns true when two rows belong to the same group
+      * @tparam K will be a pair of structs: group key and hash key (second may be empty)
+      */
     def partialMapReduce[K, V](prefixComparator: Rep[((Row, Row)) => Boolean],
                                mapKey: Rep[Row => K],
                                packKey: Rep[Row => String],

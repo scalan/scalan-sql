@@ -126,7 +126,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       generateOperator(p, inputs1).map {
         case pExp: Plan[a] @unchecked =>
           withContext(p) {
-            generateAggregate(aggregates, groupedBy, pExp, inputs1)
+            generateAggregate(p, aggregates, groupedBy, pExp, inputs1)
           }
       }
     case Filter(p, predicate) =>
@@ -156,25 +156,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       val inputs1 = inputs.orderByInfo(by)
 
       generateOperator(p, inputs1).map {
-        case pPlan: Plan[a]@unchecked =>
-
-          @tailrec
-          def findCommonPrefix[A](knownOrdering: SqlOrdering, required: List[A], foundMatches: List[A])(compare: (SortSpec, A) => Boolean): (List[A], List[A]) =
-            (knownOrdering, required) match {
-              case (gHead :: gTail, dHead :: dTail) =>
-                if (compare(gHead, dHead)) {
-                  findCommonPrefix(gTail, dTail, dHead :: foundMatches)(compare)
-                } else {
-                  (foundMatches, required)
-                }
-              case _ => (foundMatches, required)
-            }
-
+        case pPlan: Plan[a] @unchecked =>
           val eRow = pPlan.elem.eRow
-          val (prefix, suffix) = findCommonPrefix(pPlan.ordering, by, Nil) {
+          val (_, prefix, suffix) = findCommonOrderOrGroupPrefix(pPlan.ordering, by) {
             case (SortSpec(gHeadCol, gHeadDir, gNulls), SortSpec(dHeadCol, dHeadDir, dNulls)) =>
-              gHeadDir == dHeadDir && gNulls == dNulls &&
-                (dHeadCol == gHeadCol || underlyingTableColumn(dHeadCol) == Some(gHeadCol) || underlyingTableColumn(gHeadCol) == Some(dHeadCol))
+              gHeadDir == dHeadDir && gNulls == dNulls && equalOrEqualUnderlyingColumns(gHeadCol, dHeadCol)
           }
           if (suffix.isEmpty) {
             // already sorted in desired order
@@ -199,6 +185,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }).asInstanceOf[Plans[_]]).map { plan =>
     plan.node.setMetadata(SqlOperatorKey)(op)
     plan
+  }
+
+  def equalOrEqualUnderlyingColumns(x: Expression, y: Expression): Boolean = {
+    x == y || ((underlyingTableColumn(x), underlyingTableColumn(y)) match {
+      case (Some(x1), Some(y1)) => x1 == y1
+      case _ => false
+    })
   }
 
   def generateFilter[A](plan: Plan[A], p: Operator, predicate: Expression, inputs: ExprInputs) = {
@@ -509,7 +502,17 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
   }
 
-  def generateAggregate[Row](aggregates: List[AggregateExpr], groupedBy: List[Expression], pExp: Plan[Row], inputs: ExprInputs) = {
+  @tailrec
+  private def findCommonOrderOrGroupPrefix[A](knownOrdering: SqlOrdering, required: List[A], foundMatches: List[A], reversePrefixOrdering: SqlOrdering)(compare: (SortSpec, A) => Boolean): (SqlOrdering, List[A], List[A]) =
+    (knownOrdering, required) match {
+      case (gHead :: gTail, dHead :: dTail) if compare(gHead, dHead) =>
+        findCommonOrderOrGroupPrefix(gTail, dTail, dHead :: foundMatches, gHead :: reversePrefixOrdering)(compare)
+      case _ => (reversePrefixOrdering.reverse, foundMatches, required)
+    }
+  private def findCommonOrderOrGroupPrefix[A](knownOrdering: SqlOrdering, required: List[A])(compare: (SortSpec, A) => Boolean): (SqlOrdering, List[A], List[A]) =
+    findCommonOrderOrGroupPrefix(knownOrdering, required, Nil, Nil)(compare)
+
+  def generateAggregate[Row](p: Operator, aggregates: List[AggregateExpr], groupedBy: List[Expression], pExp: Plan[Row], inputs: ExprInputs) = {
     def aggOperand(agg: AggregateExpr, inputs: ExprInputs): Exp[_] =
       agg.op match {
         case Count =>
@@ -596,12 +599,20 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         }
 
         if (groupedBy.nonEmpty) {
+          val (prefixOrdering, prefix, suffix) = findCommonOrderOrGroupPrefix(pExp.ordering, groupedBy) {
+            (spec, expr) => equalOrEqualUnderlyingColumns(spec.expr, expr)
+          }
+
           val mapKey = inferredFun(eRow) { x =>
             val inputs1 = inputs + (currentScopeName -> x)
-            val byExps = groupedBy.map(generateExpr(_, inputs1))
+            val prefixExps = prefix.map(generateExpr(_, inputs1))
+            val suffixExps = suffix.map(generateExpr(_, inputs1))
             // TODO optimize case of a single expression (commented out below, in mapValue as well)
             // as part of Slicing or a separate pass?
-            tupleStruct(byExps: _*)
+            if (prefix.isEmpty)
+              tupleStruct(suffixExps: _*)
+            else
+              (tupleStruct(prefixExps: _*), tupleStruct(suffixExps: _*))
             //              byExps match {
             //                case List(byExp) =>
             //                  byExp
@@ -610,11 +621,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             //              }
           }
 
+          val node = if (prefix.isEmpty) {
+            pExp.node.mapReduce(mapKey, newValue, reduce)
+          } else {
+            val prefixComparator = generateEquality(p, prefix, inputs)(eRow)
+            pExp.node.partialMapReduce(prefixComparator, mapKey, newValue, reduce)
+          }
+
           // Do we need to filter out constraints on aggregated out columns?
 
-          // TODO Use information that input is already fully or partially sorted by columns we aggregate on
-          // (https://github.com/scalan/scalan-sql/issues/7)
-          Plan(pExp.node.mapReduce(mapKey, newValue, reduce), pExp.constraints, Nil)
+          Plan(node, pExp.constraints, prefixOrdering)
         } else {
           Plan(pExp.node.reduce(reduce, newValue), ConstraintSet.empty, Nil)
         }
@@ -745,8 +761,14 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             case (y, resolver.Index(i)) =>
               y.elem match {
                 case se: StructElem[_] =>
-                  val fieldName = se.fieldNames(i)
-                  field(y.asRep[Struct], fieldName)
+                  field(y.asRep[Struct], i)
+                case PairElem(se1: StructElem[_], se2: StructElem[_]) =>
+                  val lenFst = se1.fields.length
+                  val y1 = y.asRep[(Struct, Struct)]
+                  if (i < lenFst)
+                    field(y1._1, i)
+                  else
+                    field(y1._2, i - lenFst)
               }
           }
       }
