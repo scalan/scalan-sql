@@ -3,6 +3,7 @@ package scalan.sql.compilation
 import scala.runtime.IntRef
 import scalan.sql.parser.{SqlAST, SqlParser, SqlResolver}
 import SqlAST._
+import scala.annotation.tailrec
 import scala.util.Try
 import scalan.sql.{ColumnUseInfo, ConstraintSet, ScalanSqlExp, SingleTableColumnUseInfo}
 
@@ -98,9 +99,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               5.0
           case RelationMethods.sort(_, _) | RelationMethods.sortBy(_, _) =>
             10000.0
+          case RelationMethods.partialSort(_, _, _) =>
+            5000.0
+          case RelationMethods.partialMapReduce(_, _, _, _, _) =>
+            50.0
           case _ =>
             // obviously need to be more precise
-            10.0
+            100.0
         }
       }
       costs.sum
@@ -149,17 +154,40 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
     case OrderBy(p, by) =>
       val inputs1 = inputs.orderByInfo(by)
+
       generateOperator(p, inputs1).map {
-        case pPlan: Plan[a] @unchecked =>
+        case pPlan: Plan[a]@unchecked =>
+
+          @tailrec
+          def findCommonPrefix[A](knownOrdering: SqlOrdering, required: List[A], foundMatches: List[A])(compare: (SortSpec, A) => Boolean): (List[A], List[A]) =
+            (knownOrdering, required) match {
+              case (gHead :: gTail, dHead :: dTail) =>
+                if (compare(gHead, dHead)) {
+                  findCommonPrefix(gTail, dTail, dHead :: foundMatches)(compare)
+                } else {
+                  (foundMatches, required)
+                }
+              case _ => (foundMatches, required)
+            }
+
           val eRow = pPlan.elem.eRow
-          val guaranteedOrdering = pPlan.ordering
-          val desiredOrdering = sortSpecsToOrdering(by)
-          // TODO handle common prefixes between guaranteed and desired (https://github.com/scalan/scalan-sql/issues/7)
-          if (guaranteedOrdering.startsWith(desiredOrdering))
+          val (prefix, suffix) = findCommonPrefix(pPlan.ordering, by, Nil) {
+            case (SortSpec(gHeadCol, gHeadDir, gNulls), SortSpec(dHeadCol, dHeadDir, dNulls)) =>
+              gHeadDir == dHeadDir && gNulls == dNulls &&
+                (dHeadCol == gHeadCol || underlyingTableColumn(dHeadCol) == Some(gHeadCol) || underlyingTableColumn(gHeadCol) == Some(dHeadCol))
+          }
+          if (suffix.isEmpty) {
+            // already sorted in desired order
             pPlan
-          else {
-            val comparator = generateComparator(p, by, inputs1)(eRow)
-            Plan(pPlan.node.sort(comparator), pPlan.constraints, desiredOrdering)
+          } else {
+            val comparator = generateComparator(p, suffix, inputs1)(eRow)
+            val sortedNode = if (prefix.isEmpty) {
+              pPlan.node.sort(comparator)
+            } else {
+              val prefixComparator = generateEquality(p, prefix.map(_.expr), inputs1)(eRow)
+              pPlan.node.partialSort(prefixComparator, comparator)
+            }
+            Plan(sortedNode, pPlan.constraints, prefix reverse_::: suffix)
           }
       }
     case TableAlias(operator, alias) =>
@@ -290,18 +318,19 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             case Nil => None
           }
 
-          // TODO common prefix of orderColumns or groupColumns with index columns is enough
-          // https://github.com/scalan/scalan-sql/issues/7
+          def hasCommonPrefix[A, B](list1: List[A], list2: List[B])(implicit ev: A =:= B) =
+            list1.nonEmpty && list2.nonEmpty && list1.head == list2.head
+
           val goodForOrder: Option[SortDirection] = {
             if (orderColumns.nonEmpty) {
               List(Ascending, Descending).find { direction =>
                 val indexColumnsForDirection =
-                  columns.map(c => (c.name, c.direction.inverseIfDescending(direction)))
-                indexColumnsForDirection.startsWith(orderColumns)
+                  columns.map(c => (c.name, c.direction.inverseIfDescending(direction), NullsOrderingUnspecified: NullsOrdering))
+                hasCommonPrefix(indexColumnsForDirection, orderColumns)
               }
             } else None
           }
-          val goodForGroup = groupColumns.nonEmpty && columnNames.startsWith(groupColumns)
+          val goodForGroup = groupColumns.nonEmpty && hasCommonPrefix(columnNames, groupColumns)
 
           val optBounds = boundsLoop(columnNames)
           if (optBounds.isDefined || goodForOrder.isDefined || goodForGroup) {
@@ -315,7 +344,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             }
             val indexScanOrdering =
               for (IndexedColumn(name, _, colDirection) <- index.columns)
-                yield (ResolvedTableAttribute(table, scanId, name), colDirection.inverseIfDescending(direction))
+                yield SortSpec(ResolvedTableAttribute(table, scanId, name), colDirection.inverseIfDescending(direction), NullsOrderingUnspecified)
             val plan = Plan(relation, constraints, indexScanOrdering)
             Some(plan)
           } else
@@ -338,7 +367,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       case None =>
         Nil
       case Some(name) =>
-        List((ResolvedTableAttribute(table, scanId, name), Ascending))
+        List(SortSpec(ResolvedTableAttribute(table, scanId, name), Ascending, NullsOrderingUnspecified))
     }
   }
 
@@ -592,7 +621,20 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
   }
 
-  def generateComparator[A](table: Operator, order: List[SortSpec], inputs: ExprInputs)(implicit eRow: Elem[A]) = {
+  def generateEquality[A](table: Operator, fields: List[Expression], inputs: ExprInputs)(implicit eRow: Elem[A]) = {
+    withContext(table) {
+      fun[(A, A), Boolean] { x =>
+        fields.foldRight(toRep(true)) {
+          case (expr, acc) =>
+            val lhs = generateExpr(expr, inputs + (currentScopeName -> x._1))
+            val rhs = generateExpr(expr, inputs + (currentScopeName -> x._2))
+            (lhs === rhs) && acc
+        }
+      }
+    }
+  }
+
+  def generateComparator[A](table: Operator, order: SqlOrdering, inputs: ExprInputs)(implicit eRow: Elem[A]) = {
     withContext(table) {
       fun[(A, A), Boolean] { x =>
         // TODO NullsOrdering currently ignored
@@ -656,9 +698,20 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     def addConstraints(predicate: Expression) =
       copy(columnUseInfo = columnUseInfo.addConstraints(predicate))
 
-    def orderByInfo(sortSpecs: List[SortSpec]) = {
-      val orderBy = sortSpecsToOrdering(sortSpecs)
-      copy(columnUseInfo = columnUseInfo.copy(orderBy = orderBy))
+    def orderByInfo(sortSpecs: SqlOrdering) = {
+      def takeWhileHasUnderlyingTableColumn(sortSpecs: SqlOrdering): SqlOrdering = sortSpecs match {
+        case spec :: tail =>
+          val tail1 = takeWhileHasUnderlyingTableColumn(tail)
+          underlyingTableColumn(spec.expr) match {
+            case Some(expr1) =>
+              spec.copy(expr = expr1) :: tail1
+            case None => Nil
+          }
+        case Nil => Nil
+      }
+
+      val newOrderBy = takeWhileHasUnderlyingTableColumn(sortSpecs)
+      copy(columnUseInfo = columnUseInfo.copy(orderBy = newOrderBy))
     }
 
     def groupByInfo(expressions: List[Expression]) = {
@@ -702,13 +755,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     def +(pair: (String, Exp[_])) = copy(scopes = scopes + pair)
 
     def apply(name: String) = scopes(name)
-  }
-
-  def sortSpecsToOrdering(sortSpecs: List[SortSpec]): List[(ResolvedTableAttribute, SortDirection)] = {
-    sortSpecs.map {
-      case SortSpec(expr, direction, _) =>
-        (underlyingTableColumn(expr), direction)
-    }.takeWhile(_._1.isDefined).map { case (opt, direction) => (opt.get, direction) }
   }
 
   object ExprInputs {

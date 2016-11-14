@@ -447,7 +447,8 @@ object SqlAST {
 
   def Script(stmts: Statement*): Script = stmts.toList
 
-  type SqlOrdering = List[(ResolvedTableAttribute, SortDirection)]
+  type SqlOrdering = List[SortSpec]
+  type DesiredSqlOrdering = List[(ResolvedTableAttribute, SortDirection, NullsOrdering)]
 
   def underlyingTableColumn(expr: Expression): Option[ResolvedTableAttribute] = expr match {
     case tableAttribute: ResolvedTableAttribute =>
