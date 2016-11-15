@@ -235,75 +235,75 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           def boundsLoop(columnNames: List[String]): Option[(SearchBounds, ConstraintSet)] = columnNames match {
             case name :: tail =>
               allConstraints.get(name).flatMap { constraints =>
-                val constraintsWithExps = constraints.map {
-                  case (op, values) =>
-                    val valuesAndExps = values.flatMap { value =>
-                      // failures just mean out-of-scope values are used and so we can't use it in a scan
-                      Try {
-                        (value, generateExpr(value, inputs))
-                      }.toOption
-                    }
-                    (op, valuesAndExps)
-                }.filter(_._2.nonEmpty)
+                def constraintsInScope(op: ComparisonOp) = {
+                  val allConstraints = constraints(op)
+                  allConstraints.flatMap { value =>
+                    Try {
+                      (value, generateExpr(value, inputs))
+                    }.toOption
+                  }
+                }
 
-                if (constraintsWithExps.nonEmpty) {
-                  val attr = ResolvedTableAttribute(table, scanId, name)
-                  constraintsWithExps.get(Eq) match {
-                    case Some(eqConstraints) =>
-                      // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
-                      val (fixedValue, fixedValueExp) = eqConstraints.head
-                      val newConstraint = BinOpExpr(Eq, attr, fixedValue)
-                      val (foundBounds, foundConstraints) =
-                        boundsLoop(tail).getOrElse((SearchBounds.empty, ConstraintSet.empty))
+                val attr = ResolvedTableAttribute(table, scanId, name)
+                val eqConstraints = constraintsInScope(Eq)
+                if (eqConstraints.nonEmpty) {
+                  // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
+                  val (fixedValue, fixedValueExp) = eqConstraints.head
+                  val newConstraint = BinOpExpr(Eq, attr, fixedValue)
+                  val (foundBounds, foundConstraints) =
+                    boundsLoop(tail).getOrElse((SearchBounds.empty, ConstraintSet.empty))
 
-                      Some((foundBounds.addFixedValue(fixedValueExp), foundConstraints.addConstraints(newConstraint)))
-                    case None =>
-                      def bound(isLower: Boolean): (Option[Bound], ConstraintSet) = {
-                        def bound1(isInclusive: Boolean) = {
-                          val op = (isLower, isInclusive) match {
-                            case (true, true) => GreaterEq
-                            case (true, false) => Greater
-                            case (false, true) => LessEq
-                            case (false, false) => Less
-                          }
-
-                          constraintsWithExps.get(op).map { valuesAndExps =>
-                            val newConstraints = valuesAndExps.map {
-                              case (sqlExpr, _) => BinOpExpr(op, attr, sqlExpr)
-                            }
-                            val boundExp = valuesAndExps.map(_._2).reduce {
-                              (p1, p2) =>
-                                ordOp(p1, p2) {
-                                  (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
-                                }
-                            }
-                            (Bound(boundExp, isInclusive), newConstraints)
-                          }
-                        }
-
-                        val inclusiveBound = bound1(true)
-                        val exclusiveBound = bound1(false)
-                        // TODO This is safe, but we can get a better bound if
-                        // both are defined, using staged IF and comparison
-                        exclusiveBound.orElse(inclusiveBound) match {
-                          case Some((bound, sqlConstraints)) =>
-                            val constraintSet = sqlConstraints.foldLeft(ConstraintSet.empty)(_.addConstraints(_))
-                            (Some(bound), constraintSet)
-                          case None =>
-                            (None, ConstraintSet.empty)
-                        }
+                  Some((foundBounds.addFixedValue(fixedValueExp), foundConstraints.addConstraints(newConstraint)))
+                } else {
+                  def bound(isLower: Boolean): (Option[Bound], ConstraintSet) = {
+                    def bound1(isInclusive: Boolean) = {
+                      val op = (isLower, isInclusive) match {
+                        case (true, true) => GreaterEq
+                        case (true, false) => Greater
+                        case (false, true) => LessEq
+                        case (false, false) => Less
                       }
 
-                      val lowerBoundWithConstraints = bound(true)
-                      val upperBoundWithConstraints = bound(false)
+                      val opConstraints = constraintsInScope(op)
+                      if (opConstraints.nonEmpty) {
+                        val newConstraints = opConstraints.map {
+                          case (sqlExpr, _) => BinOpExpr(op, attr, sqlExpr)
+                        }
+                        val boundExp = opConstraints.map(_._2).reduce {
+                          (p1, p2) =>
+                            ordOp(p1, p2) {
+                              (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
+                            }
+                        }
+                        Some((Bound(boundExp, isInclusive), newConstraints))
+                      } else
+                        None
+                    }
 
-                      val lowerBound = lowerBoundWithConstraints._1
-                      val upperBound = upperBoundWithConstraints._1
-                      val allConstraints = lowerBoundWithConstraints._2.union(upperBoundWithConstraints._2)
-                      Some(SearchBounds.range(lowerBound, upperBound), allConstraints)
+                    val inclusiveBound = bound1(true)
+                    val exclusiveBound = bound1(false)
+                    // TODO This is safe, but we can get a better bound if
+                    // both are defined, using staged IF and comparison
+                    exclusiveBound.orElse(inclusiveBound) match {
+                      case Some((bound, sqlConstraints)) =>
+                        val constraintSet = sqlConstraints.foldLeft(ConstraintSet.empty)(_.addConstraints(_))
+                        (Some(bound), constraintSet)
+                      case None =>
+                        (None, ConstraintSet.empty)
+                    }
                   }
-                } else
-                  None
+
+                  val lowerBoundWithConstraints = bound(true)
+                  val upperBoundWithConstraints = bound(false)
+
+                  val lowerBound = lowerBoundWithConstraints._1
+                  val upperBound = upperBoundWithConstraints._1
+                  val allConstraints = lowerBoundWithConstraints._2.union(upperBoundWithConstraints._2)
+                  if (lowerBound.isDefined || upperBound.isDefined) {
+                    Some(SearchBounds.range(lowerBound, upperBound), allConstraints)
+                  } else
+                    None
+                }
               }
             case Nil => None
           }
