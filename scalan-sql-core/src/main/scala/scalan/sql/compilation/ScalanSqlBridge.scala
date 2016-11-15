@@ -103,9 +103,15 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             5000.0
           case RelationMethods.partialMapReduce(_, _, _, _, _) =>
             50.0
-          case _ =>
-            // obviously need to be more precise
+          case MethodCall(r, m, _, _) if
+            r.elem.isInstanceOf[ScannableElem[_, _]] ||
+              r.elem.isInstanceOf[RelationElem[_, _]] ||
+              r.elem.isInstanceOf[IterElem[_, _]] =>
+            // will fix costs for other operations later
             100.0
+          case _ =>
+            // all other operations are assumed to be very very cheap
+            0.20
         }
       }
       costs.sum
