@@ -170,8 +170,19 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     withContext(p) {
       generateOperator(p, inputs).map {
         case pExp: Plan[a] @unchecked =>
-          val structLambda = generateStructLambdaExpr(p, columns1, inputs)(pExp.elem.eRow).asRep[a => Any]
-          Plan(pExp.node.map(structLambda), pExp.constraints, pExp.ordering)
+          val projection = inferredFun(pExp.elem.eRow) { x =>
+            val inputs1 = inputs + (currentScopeName -> x)
+            val unnamedCounter = new IntRef(0)
+
+            val fields = columns1.map { exp =>
+              val name = this.name(exp, unnamedCounter)
+              val value = generateExpr(exp.expr, inputs1)
+              (name, value)
+            }
+            struct(fields)
+          }
+
+          Plan(pExp.node.map(projection), pExp.constraints, pExp.ordering)
       }
     }
   }
@@ -179,7 +190,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def generateFilter[A](plan: Plan[A], p: Operator, predicate: Expression, inputs: ExprInputs) = {
     plan.constraints.simplify(predicate) match {
       case Some(simplified) =>
-        val f = generateLambdaExpr(p, simplified, inputs)(plan.elem.eRow).asRep[A => Boolean]
+        val f = withContext(p) {
+          inferredFun(plan.elem.eRow) { x =>
+            generateExpr(simplified, inputs + (currentScopeName -> x)).asRep[Boolean]
+          }
+        }
         Plan(plan.node.filter(f), plan.constraints.addConstraints(simplified), plan.ordering)
       case None =>
         plan
@@ -685,22 +700,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     withContext(table) {
       inferredFun(eIn) { x =>
         generateExpr(exp, inputs + (currentScopeName -> x))
-      }
-    }
-  }
-
-  def generateStructLambdaExpr[A](table: Operator, exps: List[ProjectionColumn], inputs: ExprInputs)(eIn: Elem[A]): Exp[A => _] = {
-    withContext(table) {
-      inferredFun(eIn) { x =>
-        val inputs1 = inputs + (currentScopeName -> x)
-        val unnamedCounter = new IntRef(0)
-
-        val fields = exps.map { exp =>
-          val name = this.name(exp, unnamedCounter)
-          val value = generateExpr(exp.expr, inputs1)
-          (name, value)
-        }
-        struct(fields)
       }
     }
   }
