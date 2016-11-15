@@ -72,6 +72,7 @@ trait Scannables extends ScalanDsl {
       } else
         sourceIter()
       val boundedIter = boundedIter0.takeWhile(test)
+      // if bounds.isEmpty this is the same as fullScan()
       IterBasedRelation(boundedIter)
     }
   }
@@ -83,6 +84,7 @@ trait ScannablesDsl extends impl.ScannablesAbs { self: ScalanSql =>
   case class Bound(value: Rep[_], isInclusive: Boolean)
 
   case class SearchBounds(fixedValues: List[Rep[_]], lowerBound: Option[Bound], upperBound: Option[Bound]) {
+    def isEmpty = fixedValues.isEmpty && lowerBound.isEmpty && upperBound.isEmpty
     def addFixedValue(value: Rep[_]) = copy(fixedValues = value :: fixedValues)
   }
 
