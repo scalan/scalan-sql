@@ -79,7 +79,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   def selectBestPlan[A](plans: Plans[A]) = plans.minBy(_.cost)
 
   case class Plan[A](node: Exp[Relation[A]], constraints: ConstraintSet, ordering: SqlOrdering) {
-    def elem = node.elem
+    val eRow = node.elem.eRow
     // TODO Fix cost calculation
     // for now just assume plan which has fewest scans (and most searches) is the best
     lazy val cost = {
@@ -120,7 +120,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   // there is at least one plan for any operator by construction, so calling `head` below should be safe
   type Plans[A] = List[Plan[A]]
 
-  def eRow[A](plans: Plans[A]) = plans.head.elem.eRow
+  def eRow[A](plans: Plans[A]) = plans.head.eRow
 
   def generateOperator(op: Operator, inputs: ExprInputs): Plans[_] = ((op match {
     case s: Scan =>
@@ -170,7 +170,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     withContext(p) {
       generateOperator(p, inputs).map {
         case pExp: Plan[a] @unchecked =>
-          val projection = inferredFun(pExp.elem.eRow) { x =>
+          val projection = inferredFun(pExp.eRow) { x =>
             val inputs1 = inputs + (currentScopeName -> x)
             val unnamedCounter = new IntRef(0)
 
@@ -191,7 +191,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     plan.constraints.simplify(predicate) match {
       case Some(simplified) =>
         val f = withContext(p) {
-          inferredFun(plan.elem.eRow) { x =>
+          inferredFun(plan.eRow) { x =>
             generateExpr(simplified, inputs + (currentScopeName -> x)).asRep[Boolean]
           }
         }
@@ -378,7 +378,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               def nodesForErrorGraph = (outerPlans :+ innerPlan).map(_.node)
 
               val outerRowElem = eRow(outerPlans)
-              val innerRowElem = innerPlan.elem.eRow
+              val innerRowElem = innerPlan.eRow
 
               val makeHashJoin: Plan[a] => Plan[_] = {
                 val (outerJoinColumns, innerJoinColumns) =
@@ -522,7 +522,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     generateOperator(p, inputs1).map {
       case pPlan: Plan[a]@unchecked =>
-        val eRow = pPlan.elem.eRow
+        val eRow = pPlan.eRow
         val (_, prefix, suffix) = findCommonOrderOrGroupPrefix(pPlan.ordering, by) {
           case (SortSpec(gHeadCol, gHeadDir, gNulls), SortSpec(dHeadCol, dHeadDir, dNulls)) =>
             gHeadDir == dHeadDir && gNulls == dNulls && equalOrEqualUnderlyingColumns(gHeadCol, dHeadCol)
@@ -600,7 +600,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           }
       }
 
-    implicit val eRow = pExp.elem.eRow
+    implicit val eRow = pExp.eRow
 
     if (aggregates.exists(_.distinct)) {
       !!!(s"Distinct aggregates are not supported yet", pExp.node)
@@ -906,7 +906,7 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       val exprExp = generateExpr(expr, inputs)
       bestPlan(query, inputs) match {
         case queryExp: Plan[a] @unchecked =>
-          val f = inferredFun(queryExp.elem.eRow) { _.asRep[Any] === exprExp }
+          val f = inferredFun(queryExp.eRow) { _.asRep[Any] === exprExp }
           !queryExp.node.filter(f).isEmpty
       }
     case FuncExpr(name, args) =>
