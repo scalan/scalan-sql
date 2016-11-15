@@ -147,41 +147,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           }
       }
     case Project(p, columns) =>
-      withContext(p) {
-        generateOperator(p, inputs).map {
-          case pExp: Plan[a] @unchecked =>
-            // can't contain unresolved star, if it does will get a ClassCastException
-            val columns1 = columns.asInstanceOf[List[ProjectionColumn]]
-            assert(!columns1.exists(resolver.containsAggregates),
-              "Aggregate columns in Project must be handled by SqlResolver")
-            val structLambda = generateStructLambdaExpr(p, columns1, inputs)(pExp.elem.eRow).asRep[a => Any]
-            Plan(pExp.node.map(structLambda), pExp.constraints, pExp.ordering)
-        }
-      }
+      generateProjection(inputs, p, columns)
     case OrderBy(p, by) =>
-      val inputs1 = inputs.orderByInfo(by)
-
-      generateOperator(p, inputs1).map {
-        case pPlan: Plan[a] @unchecked =>
-          val eRow = pPlan.elem.eRow
-          val (_, prefix, suffix) = findCommonOrderOrGroupPrefix(pPlan.ordering, by) {
-            case (SortSpec(gHeadCol, gHeadDir, gNulls), SortSpec(dHeadCol, dHeadDir, dNulls)) =>
-              gHeadDir == dHeadDir && gNulls == dNulls && equalOrEqualUnderlyingColumns(gHeadCol, dHeadCol)
-          }
-          if (suffix.isEmpty) {
-            // already sorted in desired order
-            pPlan
-          } else {
-            val comparator = generateComparator(p, suffix, inputs1)(eRow)
-            val sortedNode = if (prefix.isEmpty) {
-              pPlan.node.sort(comparator)
-            } else {
-              val prefixComparator = generateEquality(p, prefix.map(_.expr), inputs1)(eRow)
-              pPlan.node.partialSort(prefixComparator, comparator)
-            }
-            Plan(sortedNode, pPlan.constraints, prefix reverse_::: suffix)
-          }
-      }
+      generateOrderBy(inputs, p, by)
     case TableAlias(operator, alias) =>
       generateOperator(operator, inputs)
     case SubSelect(p) =>
@@ -193,11 +161,19 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     plan
   }
 
-  def equalOrEqualUnderlyingColumns(x: Expression, y: Expression): Boolean = {
-    x == y || ((underlyingTableColumn(x), underlyingTableColumn(y)) match {
-      case (Some(x1), Some(y1)) => x1 == y1
-      case _ => false
-    })
+  def generateProjection(inputs: ExprInputs, p: Operator, columns: List[SelectListElement]): Plans[_] = {
+    // can't contain unresolved star, if it does will get a ClassCastException
+    val columns1 = columns.asInstanceOf[List[ProjectionColumn]]
+    assert(!columns1.exists(resolver.containsAggregates),
+      "Aggregate columns in Project must be handled by SqlResolver")
+
+    withContext(p) {
+      generateOperator(p, inputs).map {
+        case pExp: Plan[a] @unchecked =>
+          val structLambda = generateStructLambdaExpr(p, columns1, inputs)(pExp.elem.eRow).asRep[a => Any]
+          Plan(pExp.node.map(structLambda), pExp.constraints, pExp.ordering)
+      }
+    }
   }
 
   def generateFilter[A](plan: Plan[A], p: Operator, predicate: Expression, inputs: ExprInputs) = {
@@ -517,6 +493,40 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
   private def findCommonOrderOrGroupPrefix[A](knownOrdering: SqlOrdering, required: List[A])(compare: (SortSpec, A) => Boolean): (SqlOrdering, List[A], List[A]) =
     findCommonOrderOrGroupPrefix(knownOrdering, required, Nil, Nil)(compare)
+
+  // TODO handle the case of semantic equality due to constraints
+  def equalOrEqualUnderlyingColumns(x: Expression, y: Expression): Boolean = {
+    x == y || ((underlyingTableColumn(x), underlyingTableColumn(y)) match {
+      case (Some(x1), Some(y1)) => x1 == y1
+      case _ => false
+    })
+  }
+
+  def generateOrderBy(inputs: ExprInputs, p: Operator, by: List[SortSpec]): List[Plan[_]] = {
+    val inputs1 = inputs.orderByInfo(by)
+
+    generateOperator(p, inputs1).map {
+      case pPlan: Plan[a]@unchecked =>
+        val eRow = pPlan.elem.eRow
+        val (_, prefix, suffix) = findCommonOrderOrGroupPrefix(pPlan.ordering, by) {
+          case (SortSpec(gHeadCol, gHeadDir, gNulls), SortSpec(dHeadCol, dHeadDir, dNulls)) =>
+            gHeadDir == dHeadDir && gNulls == dNulls && equalOrEqualUnderlyingColumns(gHeadCol, dHeadCol)
+        }
+        if (suffix.isEmpty) {
+          // already sorted in desired order
+          pPlan
+        } else {
+          val comparator = generateComparator(p, suffix, inputs1)(eRow)
+          val sortedNode = if (prefix.isEmpty) {
+            pPlan.node.sort(comparator)
+          } else {
+            val prefixComparator = generateEquality(p, prefix.map(_.expr), inputs1)(eRow)
+            pPlan.node.partialSort(prefixComparator, comparator)
+          }
+          Plan(sortedNode, pPlan.constraints, prefix reverse_::: suffix)
+        }
+    }
+  }
 
   def generateAggregate[Row](p: Operator, aggregates: List[AggregateExpr], groupedBy: List[Expression], pExp: Plan[Row], inputs: ExprInputs) = {
     def aggOperand(agg: AggregateExpr, inputs: ExprInputs): Exp[_] =
