@@ -108,6 +108,8 @@ trait Iters extends ScalanDsl {
   abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
     def isCovering: Boolean = Iters.this.isCovering(table.asValue, index.asValue, eRow)
   }
+
+  abstract class TableIterByRowids[Row, A](val table: Rep[Table], val scanId: Rep[Int], val sourceIter: RIter[A], val f: Rep[A => Long])(implicit val eRow: Elem[Row], val eA: Elem[A]) extends Iter[Row]
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.

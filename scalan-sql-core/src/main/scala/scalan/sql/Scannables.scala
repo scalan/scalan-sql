@@ -8,24 +8,75 @@ import scalan.sql.parser.SqlAST._
 trait Scannables extends ScalanDsl {
   self: ScannablesDsl with ScalanSql =>
 
-  type RScannable[A] = Rep[Scannable[A]]
+  type RScannable[A, B] = Rep[Scannable[A, B]]
 
-  trait Scannable[Row] extends Def[Scannable[Row]] {
-    def eRow: Elem[Row]
+  trait Scannable[TableRow, SourceRow] extends Def[Scannable[TableRow, SourceRow]] {
+    def eTableRow: Elem[TableRow]
+    def eSourceRow: Elem[SourceRow]
+    def table: Rep[Table]
+    def scanId: Rep[Int]
+    def fakeDep: Rep[Unit]
+    def kernelInput: Rep[KernelInput]
+    def isCovering: Boolean
 
-    def sourceIter(): Rep[CursorIter[Row]]
+    def sourceIter(): Either[Rep[CursorIter[TableRow]], (Rep[IndexIter[SourceRow]], Rep[SourceRow => Long])]
 
-    def fullScan(): RRelation[Row] = IterBasedRelation(sourceIter())(eRow)
+    def mkIter(f: Rep[CursorIter[TableRow]] => Rep[Iter[TableRow]])(g: Rep[IndexIter[SourceRow]] => Rep[Iter[SourceRow]]): RIter[TableRow] = {
+      sourceIter() match {
+        case Left(tableIter) =>
+          f(tableIter)
+        case Right((indexIter, rowidGetter)) =>
+          val iter1 = g(indexIter)
+          if (isCovering) {
+            // TODO may have extra field for rowid, think how to remove it!
+            iter1.asRep[Iter[TableRow]]
+          } else {
+            TableIterByRowids(table.asValue, scanId.asValue, iter1, rowidGetter)(eTableRow, eSourceRow)
+          }
+      }
+    }
+
+    def fullScan(): RRelation[TableRow] = IterBasedRelation(mkIter(identity)(identity))(eTableRow)
   }
 
-  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    override def sourceIter() = TableIter(table, scanId, direction, fakeDep, kernelInput)
+  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row, Row] {
+    override def eTableRow = eRow
+    override def eSourceRow = eRow
+    override def isCovering = true
+    override def sourceIter() = Left(TableIter(table, scanId, direction, fakeDep, kernelInput))
   }
 
-  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    def isCovering: Boolean = Scannables.this.isCovering(table.asValue, index.asValue, eRow)
+  abstract class IndexScannable[Row, IndexRow](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row], val eIndexRow: Elem[IndexRow]) extends Scannable[Row, IndexRow] {
+    override def eSourceRow = eIndexRow
+    override def isCovering: Boolean = Scannables.this.isCovering(table.asValue, index.asValue, eRow)
 
-    override def sourceIter() = IndexIter(table, index, scanId, direction, fakeDep, kernelInput)
+    override def sourceIter() = {
+      if (isCovering) {
+        Left(IndexIter(table, index, scanId, direction, fakeDep, kernelInput)(eRow))
+      } else {
+        val indexIter = IndexIter(table, index, scanId, direction, fakeDep, kernelInput)(eIndexRow)
+        val index0 = index.asValue
+        val indexColumnNames = index0.columns.map(_.name)
+        val rowidFieldNameInIndexRow = rowidColumn(table.asValue).filter(indexColumnNames.contains) match {
+          case Some(name) =>
+            name
+          case None =>
+            indexColumnNames.last
+        }
+        val f = fun[IndexRow, Long] { x =>
+          val rowid = x.asRep[Struct].getUntyped(rowidFieldNameInIndexRow)
+          (rep_getElem(rowid): Elem[_]) match {
+            case IntElement =>
+              rowid.asRep[Int].toLong
+            case LongElement =>
+              rowid.asRep[Long]
+            case elem =>
+              !!!(s"rowid in index ${index0.name} on table ${index0.tableName} found under name ${rowidFieldNameInIndexRow}, but its type is $elem instead of INTEGER or BIGINT")
+          }
+        }
+        Right((indexIter, f))
+      }
+    }
 
     // FIXME assumes all columns in index are ASC
     def search(bounds: SearchBounds): RRelation[Row] = {
@@ -68,9 +119,9 @@ trait Scannables extends ScalanDsl {
 
       val boundedIter0 = if (keyValues.nonEmpty) {
         val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
-        sourceIter().seekIndex(repKeyValues, startOp)
+        mkIter(_.seekIndex(repKeyValues, startOp))(_.seekIndex(repKeyValues, startOp))
       } else
-        sourceIter()
+        mkIter(identity)(identity)
       val boundedIter = boundedIter0.takeWhile(test)
       // if bounds.isEmpty this is the same as fullScan()
       IterBasedRelation(boundedIter)
@@ -79,7 +130,8 @@ trait Scannables extends ScalanDsl {
 }
 
 trait ScannablesDsl extends impl.ScannablesAbs { self: ScalanSql =>
-  implicit def ScannableElemExtensions[A](ie: Elem[Scannable[A]]) = ie.asInstanceOf[ScannableElem[A, Scannable[A]]]
+  implicit def ScannableElemExtensions[A, B](ie: Elem[Scannable[A, B]]) =
+    ie.asInstanceOf[ScannableElem[A, B, Scannable[A, B]]]
 
   case class Bound(value: Rep[_], isInclusive: Boolean)
 
@@ -99,10 +151,10 @@ trait ScannablesDslStd extends impl.ScannablesStd { self: ScalanSqlStd =>
 
 trait ScannablesDslExp extends impl.ScannablesExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
-    case elem: ScannableElem[_, _] =>
+    case elem: ScannableElem[_, _, _] =>
       m.getName match {
         case "fullScan" | "search" =>
-          relationElement(elem.eRow)
+          relationElement(elem.eTableRow)
         case _ => super.getResultElem(receiver, m, args)
       }
     case _ =>
