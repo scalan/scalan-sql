@@ -1,56 +1,11 @@
 package scalan.sql
 
-import scalan.common.Lazy
 import scalan.staged.Slicing
 
 trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
   import KeyPath._
-  
-  case class IterMarking[T](itemsPath: KeyPath, override val innerMark: SliceMarking[T]) extends SliceMarking1[T,Iter](innerMark) {
-    implicit val eItem = innerMark.elem
-    val elem = element[Iter[T]]
-    def children: Seq[SliceMarking[_]] = Seq(innerMark)
-    def meet(other: SliceMarking[Iter[T]]) = ???
-    def join(other: SliceMarking[Iter[T]]) = other match {
-      case am: IterMarking[T] @unchecked if am.itemsPath == itemsPath =>
-        IterMarking(itemsPath, innerMark.join(am.innerMark))
-      case am: IterMarking[T] @unchecked if am.itemsPath == None =>
-        this
-      case am: IterMarking[T] @unchecked if this.itemsPath == None =>
-        other
-    }
-    def >>[R](other: SliceMarking[R]): SliceMarking[Iter[T]] = other match {
-      case am: IterMarking[_] if am.itemsPath == itemsPath =>
-        IterMarking(itemsPath, innerMark >> am.innerMark)
-      case am: IterMarking[_] if am.itemsPath == None =>
-        IterMarking(None, innerMark >> am.innerMark)
-    }
-    def nonEmpty = innerMark.nonEmpty && (!itemsPath.isNone)
-    def isIdentity = itemsPath.isAll && innerMark.isIdentity
-    def |/|[R](key: KeyPath, inner: SliceMarking[R]) = key match {
-      case All if inner.elem == eItem =>
-        IterMarking[T](key, inner.asMark[T])
-    }
-    def projectToExp(xs: Exp[Iter[T]]): Exp[_] = itemsPath match {
-      case All =>
-        assert(xs.elem == this.elem)
-        reifyObject(UnpackSliced(xs, this))
-      case None =>
-        Iter.empty[T]
-      case _ =>
-        !!!(s"itemsPath = $itemsPath")
-    }
-    val projectedElem = iterElement(innerMark.projectedElem)
-    def makeSlot = {
-      SlicedIter(fresh(Lazy(projectedElem)), innerMark)
-    }
-    def set(slot: Exp[Iter[T]], value: Exp[_]) = slot match {
-      case Def(iter: SlicedIter[T,a]@unchecked) =>
-        SlicedIter(value.asRep[Iter[a]], iter.innerMark)
-      case _ =>
-        setInvalid(slot, value)
-    }
-  }
+
+  val IterMarking = new TraversableMarkingFor[Iter]
 
   protected def createSliceAnalyzer: SliceAnalyzer = new SqlSliceAnalyzer
   
@@ -274,15 +229,6 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
   }
 
   val KernelInputMarking = AllBaseMarking(kernelInputElement)
-
-  case class SlicedIter[A, B](source: RIter[B], override val innerMark: SliceMarking[A])
-    extends Sliced1[A, B, Iter](IterMarking[A](All, innerMark)) {
-    override def toString = s"SlicedIter[${innerMark.elem.name}]($source)"
-    override def equals(other: Any) = other match {
-      case s: SlicedIter[_, _] => source == s.source && innerMark == s.innerMark
-      case _ => false
-    }
-  }
 
   override def rewriteDef[T](d: Def[T]): Exp[_] = d match {
     case IterMethods.filter(
