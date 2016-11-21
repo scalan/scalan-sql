@@ -3,8 +3,9 @@ package scalan.sql.compilation
 import scala.runtime.IntRef
 import scalan.sql.parser.{SqlAST, SqlParser, SqlResolver}
 import SqlAST._
+import scala.annotation.tailrec
 import scala.util.Try
-import scalan.sql.{ColumnUseInfo, ScalanSqlExp, SingleTableColumnUseInfo}
+import scalan.sql.{ColumnUseInfo, ConstraintSet, ScalanSqlExp, SingleTableColumnUseInfo}
 
 class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   import scalan._
@@ -52,8 +53,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     val resultRelationFun = inferredFun(eInput) { x =>
       val inputs = ExprInputs(x, scanElems, currentScopeName -> x)
-      val finalPlan: Exp[Relation[_]] = bestPlan(resolved, inputs)
-      finalPlan
+      val finalPlan = bestPlan(resolved, inputs)
+      val finalNode: Exp[Relation[_]] = finalPlan.node
+      finalNode
     }
     // could return a struct instead of adding metadate, function is easier to pass to compiler for now
     resultRelationFun.setMetadata(QueryTextKey)(query)
@@ -74,35 +76,51 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     selectBestPlan(allPlans)
   }
 
-  // TODO plans should include cost
-  // for now just assume plan which has fewest scans (and most searches) is the best
-  def selectBestPlan[A](plans: Plans[A]) = plans.minBy { plan =>
-    val graph = new PGraph(plan)
-    val costs = graph.scheduleAll.iterator.map {
-      te => te.rhs match {
-        case ScannableMethods.fullScan(_) =>
-          1000.0
-        case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
-          // TODO check how precise bounds are
-          val index = is.index.asValue
-          if (index.isPrimaryKey || is.isCovering)
-            1.0
-          else if (index.isUnique)
-            2.0
-          else
-            5.0
-        case _ =>
-          // obviously need to be more precise
-          10.0
+  def selectBestPlan[A](plans: Plans[A]) = plans.minBy(_.cost)
+
+  case class Plan[A](node: Exp[Relation[A]], constraints: ConstraintSet, ordering: SqlOrdering) {
+    val eRow = node.elem.eRow
+    // TODO Fix cost calculation
+    // for now just assume plan which has fewest scans (and most searches) is the best
+    lazy val cost = {
+      val graph = new PGraph(node)
+      val costs = graph.scheduleAll.iterator.map {
+        te => te.rhs match {
+          case ScannableMethods.fullScan(_) =>
+            1000.0
+          case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
+            // TODO check how precise bounds are
+            val index = is.index.asValue
+            if (index.isPrimaryKey || is.isCovering)
+              1.0
+            else if (index.isUnique)
+              2.0
+            else
+              5.0
+          case RelationMethods.sort(_, _) | RelationMethods.sortBy(_, _) =>
+            10000.0
+          case RelationMethods.partialSort(_, _, _) =>
+            5000.0
+          case RelationMethods.partialMapReduce(_, _, _, _, _) =>
+            50.0
+          case MethodCall(r, m, _, _) if
+            r.elem.isInstanceOf[ScannableElem[_, _]] ||
+              r.elem.isInstanceOf[RelationElem[_, _]] ||
+              r.elem.isInstanceOf[IterElem[_, _]] =>
+            // will fix costs for other operations later
+            100.0
+          case _ =>
+            // all other operations are assumed to be very very cheap
+            0.20
+        }
       }
+      costs.sum
     }
-    costs.sum
   }
-
   // there is at least one plan for any operator by construction, so calling `head` below should be safe
-  type Plans[A] = List[Exp[Relation[A]]]
+  type Plans[A] = List[Plan[A]]
 
-  def eRow[A](plans: Plans[A]) = plans.head.elem.eRow
+  def eRow[A](plans: Plans[A]) = plans.head.eRow
 
   def generateOperator(op: Operator, inputs: ExprInputs): Plans[_] = ((op match {
     case s: Scan =>
@@ -112,9 +130,9 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case Aggregate(p, groupedBy, aggregates) =>
       val inputs1 = inputs.groupByInfo(groupedBy)
       generateOperator(p, inputs1).map {
-        case pExp: RRelation[a] @unchecked =>
+        case pExp: Plan[a] @unchecked =>
           withContext(p) {
-            generateAggregate(aggregates, groupedBy, pExp, inputs1)
+            generateAggregate(p, aggregates, groupedBy, pExp, inputs1)
           }
       }
     case Filter(p, predicate) =>
@@ -123,40 +141,64 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         case join: Join =>
           generateJoin(join, Some(predicate), inputs1)
         case _ =>
-          val pPlans = generateOperator(p, inputs1)
-          pPlans.map(generateFilter(_, p, predicate, inputs1))
+          generateOperator(p, inputs1) match {
+            case pPlans: Plans[a] @unchecked =>
+              (pPlans: Plans[a]).map(generateFilter(_, p, predicate, inputs1))
+          }
       }
     case Project(p, columns) =>
-      withContext(p) {
-        generateOperator(p, inputs).map {
-          case pExp: RRelation[a] @unchecked =>
-            // can't contain unresolved star, if it does will get a ClassCastException
-            val columns1 = columns.asInstanceOf[List[ProjectionColumn]]
-            assert(!columns1.exists(resolver.containsAggregates),
-              "Aggregate columns in Project must be handled by SqlResolver")
-            val structLambda = generateStructLambdaExpr(p, columns1, inputs)(pExp.elem.eRow).asRep[a => Any]
-            pExp.map(structLambda)
-        }
-      }
+      generateProjection(inputs, p, columns)
     case OrderBy(p, by) =>
-      val inputs1 = inputs.orderByInfo(by)
-      generateOperator(p, inputs1).map {
-        case pExp: RRelation[a] @unchecked =>
-          val eRow = pExp.elem.eRow
-          val comparator = generateComparator(p, by, inputs1)(eRow)
-          pExp.sort(comparator)
-      }
+      generateOrderBy(inputs, p, by)
     case TableAlias(operator, alias) =>
       generateOperator(operator, inputs)
     case SubSelect(p) =>
       generateOperator(p, inputs)
     case _ =>
       ???(s"Failed to construct Scalan graph from SQL AST $op")
-  }).asInstanceOf[Plans[_]]).map(_.setMetadata(SqlOperatorKey)(op))
+  }).asInstanceOf[Plans[_]]).map { plan =>
+    plan.node.setMetadata(SqlOperatorKey)(op)
+    plan
+  }
 
-  def generateFilter[A](plan: RRelation[A], p: Operator, predicate: Expression, inputs: ExprInputs) = {
-    val f = generateLambdaExpr(p, predicate, inputs)(plan.elem.eRow).asRep[A => Boolean]
-    plan.filter(f)
+  def generateProjection(inputs: ExprInputs, p: Operator, columns: List[SelectListElement]): Plans[_] = {
+    // can't contain unresolved star, if it does will get a ClassCastException
+    val columns1 = columns.asInstanceOf[List[ProjectionColumn]]
+    assert(!columns1.exists(resolver.containsAggregates),
+      "Aggregate columns in Project must be handled by SqlResolver")
+
+    withContext(p) {
+      generateOperator(p, inputs).map {
+        case pExp: Plan[a] @unchecked =>
+          val projection = inferredFun(pExp.eRow) { x =>
+            val inputs1 = inputs + (currentScopeName -> x)
+            val unnamedCounter = new IntRef(0)
+
+            val fields = columns1.map { exp =>
+              val name = this.name(exp, unnamedCounter)
+              val value = generateExpr(exp.expr, inputs1)
+              (name, value)
+            }
+            struct(fields)
+          }
+
+          Plan(pExp.node.map(projection), pExp.constraints, pExp.ordering)
+      }
+    }
+  }
+
+  def generateFilter[A](plan: Plan[A], p: Operator, predicate: Expression, inputs: ExprInputs) = {
+    plan.constraints.simplify(predicate) match {
+      case Some(simplified) =>
+        val f = withContext(p) {
+          inferredFun(plan.eRow) { x =>
+            generateExpr(simplified, inputs + (currentScopeName -> x)).asRep[Boolean]
+          }
+        }
+        Plan(plan.node.filter(f), plan.constraints.addConstraints(simplified), plan.ordering)
+      case None =>
+        plan
+    }
   }
 
   private def currentLambdaArg(inputs: ExprInputs): Exp[_] = {
@@ -190,32 +232,33 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           val columns = index.columns
           val columnNames = columns.map(_.name)
 
-          def boundsLoop(columnNames: List[String]): Option[SearchBounds] = columnNames match {
+          def boundsLoop(columnNames: List[String]): Option[(SearchBounds, ConstraintSet)] = columnNames match {
             case name :: tail =>
               allConstraints.get(name).flatMap { constraints =>
-                val constraintsWithExps = constraints.flatMap {
-                  case (op, value) =>
-                    // failures just mean out-of-scope values are used and so we can't use it in a scan
-                    Try {
-                      val valueExp = generateExpr(value, inputs)
-                      (op, valueExp)
-                    }.toOption
-                }.groupBy(_._1)
+                val constraintsWithExps = constraints.map {
+                  case (op, values) =>
+                    val valuesAndExps = values.flatMap { value =>
+                      // failures just mean out-of-scope values are used and so we can't use it in a scan
+                      Try {
+                        (value, generateExpr(value, inputs))
+                      }.toOption
+                    }
+                    (op, valuesAndExps)
+                }.filter(_._2.nonEmpty)
 
                 if (constraintsWithExps.nonEmpty) {
+                  val attr = ResolvedTableAttribute(table, scanId, name)
                   constraintsWithExps.get(Eq) match {
                     case Some(eqConstraints) =>
                       // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
-                      val fixedValue = eqConstraints.head._2
+                      val (fixedValue, fixedValueExp) = eqConstraints.head
+                      val newConstraint = BinOpExpr(Eq, attr, fixedValue)
+                      val (foundBounds, foundConstraints) =
+                        boundsLoop(tail).getOrElse((SearchBounds.empty, ConstraintSet.empty))
 
-                      boundsLoop(tail) match {
-                        case None =>
-                          Some(SearchBounds.fixedValue(fixedValue))
-                        case Some(bounds) =>
-                          Some(bounds.addFixedValue(fixedValue))
-                      }
+                      Some((foundBounds.addFixedValue(fixedValueExp), foundConstraints.addConstraints(newConstraint)))
                     case None =>
-                      def bound(isLower: Boolean) = {
+                      def bound(isLower: Boolean): (Option[Bound], ConstraintSet) = {
                         def bound1(isInclusive: Boolean) = {
                           val op = (isLower, isInclusive) match {
                             case (true, true) => GreaterEq
@@ -224,25 +267,40 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                             case (false, false) => Less
                           }
 
-                          constraintsWithExps.get(op).map(_.map(_._2).reduce {
-                            (p1, p2) =>
-                              ordOp(p1, p2) {
-                                (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
-                              }
-                          })
-                        }.map(Bound(_, isInclusive))
+                          constraintsWithExps.get(op).map { valuesAndExps =>
+                            val newConstraints = valuesAndExps.map {
+                              case (sqlExpr, _) => BinOpExpr(op, attr, sqlExpr)
+                            }
+                            val boundExp = valuesAndExps.map(_._2).reduce {
+                              (p1, p2) =>
+                                ordOp(p1, p2) {
+                                  (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
+                                }
+                            }
+                            (Bound(boundExp, isInclusive), newConstraints)
+                          }
+                        }
 
                         val inclusiveBound = bound1(true)
                         val exclusiveBound = bound1(false)
                         // TODO This is safe, but we can get a better bound if
                         // both are defined, using staged IF and comparison
-                        exclusiveBound.orElse(inclusiveBound)
+                        exclusiveBound.orElse(inclusiveBound) match {
+                          case Some((bound, sqlConstraints)) =>
+                            val constraintSet = sqlConstraints.foldLeft(ConstraintSet.empty)(_.addConstraints(_))
+                            (Some(bound), constraintSet)
+                          case None =>
+                            (None, ConstraintSet.empty)
+                        }
                       }
 
-                      val lowerBound = bound(true)
-                      val upperBound = bound(false)
+                      val lowerBoundWithConstraints = bound(true)
+                      val upperBoundWithConstraints = bound(false)
 
-                      Some(SearchBounds.range(lowerBound, upperBound))
+                      val lowerBound = lowerBoundWithConstraints._1
+                      val upperBound = upperBoundWithConstraints._1
+                      val allConstraints = lowerBoundWithConstraints._2.union(upperBoundWithConstraints._2)
+                      Some(SearchBounds.range(lowerBound, upperBound), allConstraints)
                   }
                 } else
                   None
@@ -250,31 +308,56 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             case Nil => None
           }
 
-          // FIXME goodForOrder/group can only be used after cost calculation is added
-          // TODO common prefix is enough, we need to add partial sorting primitives
-          val goodForOrder: Option[SortDirection] = None
-          // orderColumns.nonEmpty && columns.map(c => (c.name, c.direction)).startsWith(orderColumns)
-          val goodForGroup = false // groupColumns.nonEmpty && columnNames.takeWhile(groupColumns.contains).nonEmpty
+          def hasCommonPrefix[A, B](list1: List[A], list2: List[B])(implicit ev: A =:= B) =
+            list1.nonEmpty && list2.nonEmpty && list1.head == list2.head
 
-          val optPlan = boundsLoop(columnNames) match {
-            case Some(bounds) =>
-              val direction = goodForOrder.getOrElse(Ascending)
-              val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
-
-              Some(scannable.search(bounds))
-            case None =>
-              val optDirection = goodForOrder.orElse(if (goodForGroup) Some(Ascending) else None)
-
-              optDirection.map { direction =>
-                IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow).fullScan()
+          val goodForOrder: Option[SortDirection] = {
+            if (orderColumns.nonEmpty) {
+              List(Ascending, Descending).find { direction =>
+                val indexColumnsForDirection =
+                  columns.map(c => (c.name, c.direction.inverseIfDescending(direction), NullsOrderingUnspecified: NullsOrdering))
+                hasCommonPrefix(indexColumnsForDirection, orderColumns)
               }
+            } else None
           }
-          optPlan
+          val goodForGroup = groupColumns.nonEmpty && hasCommonPrefix(columnNames, groupColumns)
+
+          val optBounds = boundsLoop(columnNames)
+          if (optBounds.isDefined || goodForOrder.isDefined || goodForGroup) {
+            val direction = goodForOrder.getOrElse(Ascending)
+            val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
+            val (relation, constraints) = optBounds match {
+              case Some((bounds, constraints0)) =>
+                (scannable.search(bounds), constraints0)
+              case None =>
+                (scannable.fullScan(), ConstraintSet.empty)
+            }
+            val indexScanOrdering =
+              for (IndexedColumn(name, _, colDirection) <- index.columns)
+                yield SortSpec(ResolvedTableAttribute(table, scanId, name), colDirection.inverseIfDescending(direction), NullsOrderingUnspecified)
+            val plan = Plan(relation, constraints, indexScanOrdering)
+            Some(plan)
+          } else
+            None
         }
 
-        val tablePlan = TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan()
+        val relation =
+          TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan()
+
+        val tablePlan = Plan(relation, ConstraintSet.empty, tableScanOrdering(table, scanId))
 
         tablePlan +: indexPlans
+    }
+  }
+
+  // TODO this depends on the database, make abstract
+  // This implementation is for SQLite (and MySQL?)
+  def tableScanOrdering(table: Table, scanId: Int): SqlOrdering = {
+    rowidColumn(table) match {
+      case None =>
+        Nil
+      case Some(name) =>
+        List(SortSpec(ResolvedTableAttribute(table, scanId, name), Ascending, NullsOrderingUnspecified))
     }
   }
 
@@ -291,11 +374,13 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           val (outer, inner) = if (leftIsOuter) (join.left, join.right) else (join.right, join.left)
 
           (generateOperator(outer, inputs), bestPlan(inner, innerInputs)) match {
-            case (outerPlans: Plans[a] @unchecked, innerPlan: RRelation[b] @unchecked) =>
-              val outerRowElem = eRow(outerPlans)
-              val innerRowElem = innerPlan.elem.eRow
+            case (outerPlans: Plans[a] @unchecked, innerPlan: Plan[b] @unchecked) =>
+              def nodesForErrorGraph = (outerPlans :+ innerPlan).map(_.node)
 
-              val makeHashJoin: RRelation[a] => RRelation[_] = {
+              val outerRowElem = eRow(outerPlans)
+              val innerRowElem = innerPlan.eRow
+
+              val makeHashJoin: Plan[a] => Plan[_] = {
                 val (outerJoinColumns, innerJoinColumns) =
                   withContext(outer) {
                     val OuterScopeName = currentScopeName
@@ -314,17 +399,17 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                               if (bindingR.scope == InnerScopeName)
                                 List((l, r))
                               else
-                                !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerPlan): _*)
+                                !!!(s"$l and $r must be columns on opposing join sides", nodesForErrorGraph: _*)
                             case InnerScopeName =>
                               if (bindingR.scope == OuterScopeName)
                                 List((r, l))
                               else
-                                !!!(s"$l and $r must be columns on opposing join sides", (outerPlans :+ innerPlan): _*)
+                                !!!(s"$l and $r must be columns on opposing join sides", nodesForErrorGraph: _*)
                             case _ =>
-                              !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", (outerPlans :+ innerPlan): _*)
+                              !!!(s"$l seems not to be a column of $outer or $inner: binding $bindingL", nodesForErrorGraph: _*)
                           }
                         case _ =>
-                          !!!(s"Unsupported join condition: $cond", (outerPlans :+ innerPlan): _*)
+                          !!!(s"Unsupported join condition: $cond", nodesForErrorGraph: _*)
                       }
 
                       columns(condition).unzip
@@ -338,7 +423,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
                     columns match {
                       case Seq() =>
-                        !!!(s"Join using empty column list", (outerPlans :+ innerPlan): _*)
+                        !!!(s"Join using empty column list", nodesForErrorGraph: _*)
                       case Seq(col) =>
                         column(col)
                       case _ =>
@@ -352,14 +437,23 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 val innerKeyFun = keyFun(innerRowElem, inner, innerJoinColumns)
                 if (outerKeyFun.elem.eRange != innerKeyFun.elem.eRange) {
                   !!!(s"Different key types for two join sides: ${outerKeyFun.elem.eRange} and ${innerKeyFun.elem.eRange}",
-                    (outerPlans :+ innerPlan :+ outerKeyFun :+ innerKeyFun): _*)
+                    (nodesForErrorGraph :+ outerKeyFun :+ innerKeyFun): _*)
                 }
 
+                def hashJoinPlans[A, B, K](left: Plan[A], right: Plan[B], leftKeyFun: Rep[A => K], rightKeyFun: Rep[B => K]) =
+                  Plan(
+                    left.node.hashJoin(right.node, leftKeyFun, rightKeyFun, leftIsOuter),
+                    left.constraints.union(right.constraints),
+                    left.ordering)
+
                 if (leftIsOuter)
-                  _.hashJoin(innerPlan, outerKeyFun, innerKeyFun, leftIsOuter)
+                  hashJoinPlans(_, innerPlan, outerKeyFun, innerKeyFun)
                 else
-                  innerPlan.hashJoin(_, innerKeyFun, outerKeyFun, leftIsOuter)
+                  hashJoinPlans(innerPlan, _, innerKeyFun, outerKeyFun)
               }
+
+              var constraints1: ConstraintSet = ConstraintSet.empty
+              var ordering1: SqlOrdering = Nil
 
               val flatMapArg = withContext(outer) {
                 inferredFun(outerRowElem) { x =>
@@ -369,13 +463,15 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                   }
                   val inner1 = resolver.pushdownFilter(inner, condition1)
 
-                  val inner1Plan = bestPlan(inner1, innerInputs + (currentScopeName -> x)).asRep[Relation[b]]
+                  val inner1Plan = bestPlan(inner1, innerInputs + (currentScopeName -> x)).asInstanceOf[Plan[b]]
+                  constraints1 = inner1Plan.constraints
+                  ordering1 = inner1Plan.ordering
 
                   val g = inferredFun(innerRowElem) { y =>
                     if (leftIsOuter) (x, y) else (y, x)
                   }
 
-                  inner1Plan.map(g)
+                  inner1Plan.node.map(g)
                 }
               }
 
@@ -387,8 +483,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                     generateFilter(hashJoinUnfiltered, join, pred, inputs)
                 }
 
-                val nestedLoopJoin = outerPlan.flatMap(flatMapArg)
-                Iterator[RRelation[_]](hashJoin, nestedLoopJoin)
+                val nestedLoopJoin = Plan(
+                  outerPlan.node.flatMap(flatMapArg),
+                  outerPlan.constraints.union(constraints1),
+                  outerPlan.ordering ++ ordering1
+                )
+                Iterator[Plan[_]](hashJoin, nestedLoopJoin)
               }
           }
         }
@@ -399,7 +499,51 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
   }
 
-  def generateAggregate[Row](aggregates: List[AggregateExpr], groupedBy: List[Expression], pExp: Exp[Relation[Row]], inputs: ExprInputs) = {
+  @tailrec
+  private def findCommonOrderOrGroupPrefix[A](knownOrdering: SqlOrdering, required: List[A], foundMatches: List[A], reversePrefixOrdering: SqlOrdering)(compare: (SortSpec, A) => Boolean): (SqlOrdering, List[A], List[A]) =
+    (knownOrdering, required) match {
+      case (gHead :: gTail, dHead :: dTail) if compare(gHead, dHead) =>
+        findCommonOrderOrGroupPrefix(gTail, dTail, dHead :: foundMatches, gHead :: reversePrefixOrdering)(compare)
+      case _ => (reversePrefixOrdering.reverse, foundMatches, required)
+    }
+  private def findCommonOrderOrGroupPrefix[A](knownOrdering: SqlOrdering, required: List[A])(compare: (SortSpec, A) => Boolean): (SqlOrdering, List[A], List[A]) =
+    findCommonOrderOrGroupPrefix(knownOrdering, required, Nil, Nil)(compare)
+
+  // TODO handle the case of semantic equality due to constraints
+  def equalOrEqualUnderlyingColumns(x: Expression, y: Expression): Boolean = {
+    x == y || ((underlyingTableColumn(x), underlyingTableColumn(y)) match {
+      case (Some(x1), Some(y1)) => x1 == y1
+      case _ => false
+    })
+  }
+
+  def generateOrderBy(inputs: ExprInputs, p: Operator, by: List[SortSpec]): List[Plan[_]] = {
+    val inputs1 = inputs.orderByInfo(by)
+
+    generateOperator(p, inputs1).map {
+      case pPlan: Plan[a]@unchecked =>
+        val eRow = pPlan.eRow
+        val (_, prefix, suffix) = findCommonOrderOrGroupPrefix(pPlan.ordering, by) {
+          case (SortSpec(gHeadCol, gHeadDir, gNulls), SortSpec(dHeadCol, dHeadDir, dNulls)) =>
+            gHeadDir == dHeadDir && gNulls == dNulls && equalOrEqualUnderlyingColumns(gHeadCol, dHeadCol)
+        }
+        if (suffix.isEmpty) {
+          // already sorted in desired order
+          pPlan
+        } else {
+          val comparator = generateComparator(p, suffix, inputs1)(eRow)
+          val sortedNode = if (prefix.isEmpty) {
+            pPlan.node.sort(comparator)
+          } else {
+            val prefixComparator = generateEquality(p, prefix.map(_.expr), inputs1)(eRow)
+            pPlan.node.partialSort(prefixComparator, comparator)
+          }
+          Plan(sortedNode, pPlan.constraints, prefix reverse_::: suffix)
+        }
+    }
+  }
+
+  def generateAggregate[Row](p: Operator, aggregates: List[AggregateExpr], groupedBy: List[Expression], pExp: Plan[Row], inputs: ExprInputs) = {
     def aggOperand(agg: AggregateExpr, inputs: ExprInputs): Exp[_] =
       agg.op match {
         case Count =>
@@ -456,10 +600,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           }
       }
 
-    implicit val eRow = pExp.elem.eRow
+    implicit val eRow = pExp.eRow
 
     if (aggregates.exists(_.distinct)) {
-      !!!(s"Distinct aggregates are not supported yet", pExp)
+      !!!(s"Distinct aggregates are not supported yet", pExp.node)
     }
 
     val eV0 = structElement(aggregates.zipWithIndex.map { case (agg, i) => tupleFN(i) -> aggElem(agg)})
@@ -486,12 +630,20 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         }
 
         if (groupedBy.nonEmpty) {
+          val (prefixOrdering, prefix, suffix) = findCommonOrderOrGroupPrefix(pExp.ordering, groupedBy) {
+            (spec, expr) => equalOrEqualUnderlyingColumns(spec.expr, expr)
+          }
+
           val mapKey = inferredFun(eRow) { x =>
             val inputs1 = inputs + (currentScopeName -> x)
-            val byExps = groupedBy.map(generateExpr(_, inputs1))
+            val prefixExps = prefix.map(generateExpr(_, inputs1))
+            val suffixExps = suffix.map(generateExpr(_, inputs1))
             // TODO optimize case of a single expression (commented out below, in mapValue as well)
             // as part of Slicing or a separate pass?
-            tupleStruct(byExps: _*)
+            if (prefix.isEmpty)
+              tupleStruct(suffixExps: _*)
+            else
+              (tupleStruct(prefixExps: _*), tupleStruct(suffixExps: _*))
             //              byExps match {
             //                case List(byExp) =>
             //                  byExp
@@ -500,14 +652,36 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             //              }
           }
 
-          pExp.mapReduce(mapKey, newValue, reduce)
+          val node = if (prefix.isEmpty) {
+            pExp.node.mapReduce(mapKey, newValue, reduce)
+          } else {
+            val prefixComparator = generateEquality(p, prefix, inputs)(eRow)
+            pExp.node.partialMapReduce(prefixComparator, mapKey, newValue, reduce)
+          }
+
+          // Do we need to filter out constraints on aggregated out columns?
+
+          Plan(node, pExp.constraints, prefixOrdering)
         } else {
-          pExp.reduce(reduce, newValue)
+          Plan(pExp.node.reduce(reduce, newValue), ConstraintSet.empty, Nil)
         }
     }
   }
 
-  def generateComparator[A](table: Operator, order: List[SortSpec], inputs: ExprInputs)(implicit eRow: Elem[A]) = {
+  def generateEquality[A](table: Operator, fields: List[Expression], inputs: ExprInputs)(implicit eRow: Elem[A]) = {
+    withContext(table) {
+      fun[(A, A), Boolean] { x =>
+        fields.foldRight(toRep(true)) {
+          case (expr, acc) =>
+            val lhs = generateExpr(expr, inputs + (currentScopeName -> x._1))
+            val rhs = generateExpr(expr, inputs + (currentScopeName -> x._2))
+            (lhs === rhs) && acc
+        }
+      }
+    }
+  }
+
+  def generateComparator[A](table: Operator, order: SqlOrdering, inputs: ExprInputs)(implicit eRow: Elem[A]) = {
     withContext(table) {
       fun[(A, A), Boolean] { x =>
         // TODO NullsOrdering currently ignored
@@ -526,22 +700,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     withContext(table) {
       inferredFun(eIn) { x =>
         generateExpr(exp, inputs + (currentScopeName -> x))
-      }
-    }
-  }
-
-  def generateStructLambdaExpr[A](table: Operator, exps: List[ProjectionColumn], inputs: ExprInputs)(eIn: Elem[A]): Exp[A => _] = {
-    withContext(table) {
-      inferredFun(eIn) { x =>
-        val inputs1 = inputs + (currentScopeName -> x)
-        val unnamedCounter = new IntRef(0)
-
-        val fields = exps.map { exp =>
-          val name = this.name(exp, unnamedCounter)
-          val value = generateExpr(exp.expr, inputs1)
-          (name, value)
-        }
-        struct(fields)
       }
     }
   }
@@ -568,51 +726,32 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   case class ExprInputs(kernelInput: Exp[KernelInput], scanElems: Map[Scan, StructElem[_]], scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
-    def addConstraints(predicate: Expression) = {
-      val clauses = resolver.conjunctiveClauses(predicate)
-      val extractedConstraints = clauses.flatMap {
-        case clause @ BinOpExpr(op: ComparisonOp, l, r) =>
-          (resolver.underlyingTableColumn(l), resolver.underlyingTableColumn(r)) match {
-            case (None, None) =>
-              Nil
-            case (Some(l1), None) =>
-              List((l1, (op, r)))
-            case (None, Some(r1)) =>
-              List((r1, (op.inverse, l)))
-            case (Some(l1), Some(r1)) =>
-              List(
-                (l1, (op, r1)),
-                (r1, (op.inverse, l1))
-              )
+    def addConstraints(predicate: Expression) =
+      copy(columnUseInfo = columnUseInfo.addConstraints(predicate))
+
+    def orderByInfo(sortSpecs: SqlOrdering) = {
+      def takeWhileHasUnderlyingTableColumn(sortSpecs: SqlOrdering): SqlOrdering = sortSpecs match {
+        case spec :: tail =>
+          val tail1 = takeWhileHasUnderlyingTableColumn(tail)
+          underlyingTableColumn(spec.expr) match {
+            case Some(expr1) =>
+              spec.copy(expr = expr1) :: tail1
+            case None => Nil
           }
-        case _ =>
-          Nil
+        case Nil => Nil
       }
 
-      val newConstraints = extractedConstraints.foldLeft(columnUseInfo.constraints) {
-        case (map, (attr, ct)) =>
-          val currentConstraints = map.getOrElse(attr, Set.empty)
-          map.updated(attr, currentConstraints + ct)
-      }
-
-      copy(columnUseInfo = columnUseInfo.copy(constraints = newConstraints))
-    }
-
-    def orderByInfo(sortSpecs: List[SortSpec]) = {
-      val orderBy = sortSpecs.map {
-        case SortSpec(expr, direction, _) =>
-          (resolver.underlyingTableColumn(expr), direction)
-      }.takeWhile(_._1.isDefined).map { case (opt, direction) => (opt.get, direction) }
-      copy(columnUseInfo = columnUseInfo.copy(orderBy = orderBy))
+      val newOrderBy = takeWhileHasUnderlyingTableColumn(sortSpecs)
+      copy(columnUseInfo = columnUseInfo.copy(orderBy = newOrderBy))
     }
 
     def groupByInfo(expressions: List[Expression]) = {
-      val tableAttributes = expressions.flatMap(resolver.underlyingTableColumn).toSet
+      val tableAttributes = expressions.map(underlyingTableColumn).takeWhile(_.isDefined).map(_.get)
       copy(columnUseInfo = columnUseInfo.copy(groupBy = tableAttributes))
     }
 
     def withoutOrderAndGroupInfo =
-      copy(columnUseInfo = columnUseInfo.copy(orderBy = Nil, groupBy = Set.empty))
+      copy(columnUseInfo = columnUseInfo.copy(orderBy = Nil, groupBy = Nil))
 
     // TODO inline
     def resolveColumn(c: ResolvedAttribute) = {
@@ -637,8 +776,14 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             case (y, resolver.Index(i)) =>
               y.elem match {
                 case se: StructElem[_] =>
-                  val fieldName = se.fieldNames(i)
-                  field(y.asRep[Struct], fieldName)
+                  field(y.asRep[Struct], i)
+                case PairElem(se1: StructElem[_], se2: StructElem[_]) =>
+                  val lenFst = se1.fields.length
+                  val y1 = y.asRep[(Struct, Struct)]
+                  if (i < lenFst)
+                    field(y1._1, i)
+                  else
+                    field(y1._2, i - lenFst)
               }
           }
       }
@@ -703,8 +848,8 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       }
     case ExistsExpr(q) =>
       bestPlan(q, inputs) match {
-        case qExp: RRelation[a] @unchecked =>
-          !qExp.isEmpty
+        case qExp: Plan[a] @unchecked =>
+          !qExp.node.isEmpty
       }
     case LikeExpr(l, r, escape) =>
       patternMatch(l, r, escape, inputs)
@@ -744,7 +889,8 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
           }
       }
     case SelectExpr(s) =>
-      bestPlan(s, inputs)
+      // should we do anything with constraints or ordering?
+      bestPlan(s, inputs).node
     case SubstrExpr(str, from, len) =>
       val strExp = generateExpr(str, inputs).asRep[String]
       val fromExp = generateExpr(from, inputs).asRep[Int]
@@ -756,11 +902,12 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       val exprExp = generateExpr(expr, inputs)
       list.map(x => exprExp === generateExpr(x, inputs)).reduce(_ || _)
     case InExpr(expr, query) =>
+      // TODO can extra constraints from query be used when generating expr? Or vice versa?
       val exprExp = generateExpr(expr, inputs)
       bestPlan(query, inputs) match {
-        case queryExp: RRelation[a] @unchecked =>
-          val f = inferredFun(queryExp.elem.eRow) { _.asRep[Any] === exprExp }
-          !queryExp.filter(f).isEmpty
+        case queryExp: Plan[a] @unchecked =>
+          val f = inferredFun(queryExp.eRow) { _.asRep[Any] === exprExp }
+          !queryExp.node.filter(f).isEmpty
       }
     case FuncExpr(name, args) =>
       val argExps = args.map(generateExpr(_, inputs))

@@ -2,28 +2,63 @@ package scalan.sql
 
 object TPCH {
   val DDL =
-    """
-      |create table lineitem(
-      |   l_orderkey integer,
-      |   l_partkey integer,
-      |   l_suppkey integer,
-      |   l_linenumber integer,
-      |   l_quantity real,
-      |   l_extendedprice real,
-      |   l_discount real,
-      |   l_tax real,
-      |   l_returnflag char,
-      |   l_linestatus char,
-      |   l_shipdate date,
-      |   l_commitdate date,
-      |   l_receiptdate date,
-      |   l_shipinstruct varchar,
-      |   l_shipmode varchar,
-      |   l_comment varchar,
-      |   l_dummy char);
-      |
-      |create table orders(
-      |    o_orderkey integer,
+    """CREATE TABLE jit_kernels(
+      |    kernel_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      |    kernel_name TEXT NOT NULL,
+      |    query_text TEXT NOT NULL,
+      |    query_hash INTEGER,
+      |    kernel_code TEXT,
+      |    active BOOL NOT NULL,
+      |    intercept_date TIMESTAMP,
+      |    gen_date TIMESTAMP,
+      |    scalan_build_id TEXT,
+      |    scalan_failure_log TEXT,
+      |    input_signature TEXT,
+      |    output_signature TEXT,
+      |    input_tables TEXT);
+      |CREATE TABLE customer(
+      |    c_custkey INTEGER PRIMARY KEY,
+      |    c_name varchar,
+      |    c_address varchar,
+      |    c_nationkey integer,
+      |    c_phone varchar,
+      |    c_acctbal real,
+      |    c_mktsegment varchar,
+      |    c_comment varchar,
+      |    c_dummy char,
+      |    FOREIGN KEY (c_nationkey) references nation(n_nationkey));
+      |CREATE TABLE lineitem(
+      |    l_orderkey INTEGER,
+      |    l_partkey integer,
+      |    l_suppkey integer,
+      |    l_linenumber integer,
+      |    l_quantity real,
+      |    l_extendedprice real,
+      |    l_discount real,
+      |    l_tax real,
+      |    l_returnflag char,
+      |    l_linestatus char,
+      |    l_shipdate date,
+      |    l_commitdate date,
+      |    l_receiptdate date,
+      |    l_shipinstruct varchar,
+      |    l_shipmode varchar,
+      |    l_comment varchar,
+      |    l_dummy char,
+      |    PRIMARY KEY(l_orderkey, l_linenumber),
+      |    FOREIGN KEY (l_orderkey) references orders(o_orderkey),
+      |    FOREIGN KEY (l_partkey) references part(p_partkey),
+      |    FOREIGN KEY (l_suppkey) references supplier(s_suppkey));
+      |CREATE TABLE nation(
+      |    n_nationkey INTEGER PRIMARY KEY,
+      |    n_name varchar,
+      |    n_name varchar,
+      |    n_regionkey integer,
+      |    n_comment varchar,
+      |    n_dummy char,
+      |    FOREIGN KEY (n_regionkey) references region(r_regionkey));
+      |CREATE TABLE orders(
+      |    o_orderkey INTEGER PRIMARY KEY,
       |    o_custkey integer,
       |    o_orderstatus char,
       |    o_totalprice real,
@@ -32,52 +67,10 @@ object TPCH {
       |    o_clerk varchar,
       |    o_shippriority integer,
       |    o_comment varchar,
-      |    o_dummy char);
-      |
-      |create table customer(
-      |    c_custkey integer,
-      |    c_name varchar,
-      |    c_address varchar,
-      |    c_nationkey integer,
-      |    c_phone varchar,
-      |    c_acctbal real,
-      |    c_mktsegment varchar,
-      |    c_comment varchar,
-      |    c_dummy char);
-      |
-      |create table supplier(
-      |    s_suppkey integer,
-      |    s_name varchar,
-      |    s_address varchar,
-      |    s_nationkey integer,
-      |    s_phone varchar,
-      |    s_acctbal real,
-      |    s_comment varchar,
-      |    s_dummy char);
-      |
-      |create table partsupp(
-      |    ps_partkey integer,
-      |    ps_suppkey integer,
-      |    ps_availqty integer,
-      |    ps_supplycost real,
-      |    ps_comment varchar,
-      |    ps_dummy char);
-      |
-      |create table region(
-      |    r_regionkey integer,
-      |    r_name varchar,
-      |    r_comment varchar,
-      |    r_dummy char);
-      |
-      |create table nation(
-      |    n_nationkey integer,
-      |    n_name varchar,
-      |    n_regionkey integer,
-      |    n_comment varchar,
-      |    n_dummy char);
-      |
-      |create table part(
-      |    p_partkey integer,
+      |    o_dummy char,
+      |    FOREIGN KEY (o_custkey) references customer(c_custkey));
+      |CREATE TABLE part(
+      |    p_partkey INTEGER PRIMARY KEY,
       |    p_name varchar,
       |    p_mfgr varchar,
       |    p_brand varchar,
@@ -87,25 +80,39 @@ object TPCH {
       |    p_retailprice real,
       |    p_comment varchar,
       |    p_dummy char);
-      |
-      |create unique index lineitem_pk on lineitem(l_orderkey, l_linenumber);
-      |create index lineitem_order_fk on lineitem(l_orderkey);
-      |create index lineitem_supp_fk on lineitem(l_suppkey);
-      |create index lineitem_part_fk on lineitem(l_partkey);
-      |create index lineitem_ps_fk on lineitem(l_partkey, l_suppkey);
-      |create unique index part_pk on part(p_partkey);
-      |create unique index supplier_pk on supplier(s_suppkey);
-      |create index supplier_nation_fk on supplier(s_nationkey);
-      |create unique index partsupp_pk on partsupp(ps_partkey, ps_suppkey);
-      |create index partsupp_supp_fk on partsupp(ps_suppkey);
-      |create index partsupp_part_fk on partsupp(ps_partkey);
-      |create unique index customer_pk on customer(c_custkey);
-      |create index customer_nation_fk on customer(c_nationkey);
-      |create unique index orders_pk on orders(o_orderkey);
-      |create index orders_cust_fk on orders(o_custkey);
-      |create unique index nation_pk on nation(n_nationkey);
-      |create index nation_region_fk on nation(n_regionkey);
-      |create index region_pk on region(r_regionkey);
+      |CREATE TABLE partsupp(
+      |    ps_partkey integer,
+      |    ps_suppkey integer,
+      |    ps_availqty integer,
+      |    ps_supplycost real,
+      |    ps_comment varchar,
+      |    ps_dummy char,
+      |    PRIMARY KEY(ps_partkey, ps_suppkey));
+      |CREATE TABLE region(
+      |    r_regionkey INTEGER PRIMARY KEY,
+      |    r_name varchar,
+      |    r_comment varchar,
+      |    r_dummy char);
+      |CREATE TABLE supplier(
+      |    s_suppkey INTEGER PRIMARY KEY,
+      |    s_name varchar,
+      |    s_address varchar,
+      |    s_nationkey integer,
+      |    s_phone varchar,
+      |    s_acctbal real,
+      |    s_comment varchar,
+      |    s_dummy char,
+      |    FOREIGN KEY (s_nationkey) references nation(n_nationkey));
+      |CREATE INDEX customer_nation_fk on customer(c_nationkey);
+      |CREATE INDEX customer_nation_nk on customer(c_name);
+      |CREATE INDEX lineitem_order_fk on lineitem(l_orderkey);
+      |CREATE INDEX lineitem_part_fk on lineitem(l_partkey);
+      |CREATE INDEX lineitem_supp_fk on lineitem(l_suppkey);
+      |CREATE INDEX nation_region_fk on nation(n_regionkey);
+      |CREATE INDEX orders_cust_fk on orders(o_custkey);
+      |CREATE INDEX partsupp_part_fk on partsupp(ps_partkey);
+      |CREATE INDEX partsupp_supp_fk on partsupp(ps_suppkey);
+      |CREATE INDEX supplier_nation_fk on supplier(s_nationkey);
     """.stripMargin
 
   val Q1 = TestQuery(

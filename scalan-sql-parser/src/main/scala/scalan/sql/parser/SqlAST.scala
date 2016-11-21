@@ -192,9 +192,21 @@ object SqlAST {
         (if (groupedBy.nonEmpty) s" GROUP BY ${groupedBy.mkString(", ")}" else "")
   }
 
-  abstract sealed class SortDirection
-  case object Ascending extends SortDirection
-  case object Descending extends SortDirection
+  trait Invertible[T] { self: T =>
+    def inverse: T
+    def inverseIfDescending(direction: SortDirection) = direction match {
+      case Ascending => this
+      case Descending => inverse
+    }
+  }
+
+  abstract sealed class SortDirection extends Invertible[SortDirection]
+  case object Ascending extends SortDirection {
+    def inverse = Descending
+  }
+  case object Descending extends SortDirection {
+    def inverse = Ascending
+  }
 
   sealed trait NullsOrdering
   case object NullsFirst extends NullsOrdering
@@ -275,14 +287,7 @@ object SqlAST {
   case object And extends LogicOp("AND")
   case object Or extends LogicOp("OR")
 
-  sealed abstract class ComparisonOp(name: String) extends BinOp(name) {
-    def inverse: ComparisonOp
-
-    def inverseIfDescending(direction: SortDirection) = direction match {
-      case Ascending => this
-      case Descending => inverse
-    }
-  }
+  sealed abstract class ComparisonOp(name: String) extends BinOp(name) with Invertible[ComparisonOp]
   case object Eq extends ComparisonOp("=") {
     def inverse = Eq
   }
@@ -426,6 +431,12 @@ object SqlAST {
     val sqlType = column.ctype
     override def toString = s"[Resolved]${table.name}{$tableId}.$name"
   }
+  object ResolvedTableAttribute {
+    def apply(table: Table, tableId: Int, columnName: String): ResolvedTableAttribute = {
+      val i = table.columns.zipWithIndex.find(_._1.name == columnName).get._2
+      ResolvedTableAttribute(table, tableId, i)
+    }
+  }
   case class ResolvedProjectedAttribute(parent: Expression, alias: Option[String], index: Int) extends ResolvedAttribute {
     override def toString = "[Resolved]" + (alias match {
       case None => p(parent)
@@ -435,4 +446,22 @@ object SqlAST {
   }
 
   def Script(stmts: Statement*): Script = stmts.toList
+
+  type SqlOrdering = List[SortSpec]
+  type DesiredSqlOrdering = List[(ResolvedTableAttribute, SortDirection, NullsOrdering)]
+
+  def underlyingTableColumn(expr: Expression): Option[ResolvedTableAttribute] = expr match {
+    case tableAttribute: ResolvedTableAttribute =>
+      Some(tableAttribute)
+    case projectedAttribute: ResolvedProjectedAttribute =>
+      underlyingTableColumn(projectedAttribute.parent)
+    case _ => None
+  }
+
+  def conjunctiveClauses(predicate: Expression): List[Expression] = predicate match {
+    case BinOpExpr(And, l, r) =>
+      conjunctiveClauses(l) ++ conjunctiveClauses(r)
+    case _ =>
+      List(predicate)
+  }
 }

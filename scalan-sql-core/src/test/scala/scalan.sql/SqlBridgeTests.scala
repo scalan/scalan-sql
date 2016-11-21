@@ -87,6 +87,46 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
     }
   }
 
+  describe("order by index") {
+    it("with project") {
+      // must be a full (covering) index scan, no sorting
+      testQuery("select c_name, c_custkey from customer order by c_name")
+    }
+
+    it("inverted") {
+      // must be a full (non-covering) reverse index scan, no sorting
+      testQuery("select c_name, c_custkey, c_address from customer order by c_name desc")
+    }
+  }
+
+  describe("partial sorting") {
+    it("on primary key") {
+      // must be full table scan, then partial sort on c_name with equality on c_custkey
+      testQuery("select c_name, c_custkey from customer order by c_custkey, c_name")
+    }
+
+    it("common prefix") {
+      // must be full index scan on lineitem_pk _or_ lineitem_order_fk, then partial sort on l_partkey
+      testQuery("select * from lineitem order by l_orderkey, l_partkey")
+    }
+  }
+
+  describe("ordered aggregation") {
+    it("full order") {
+      // must be full index scan, then partialMapReduce with K = Unit
+      testQuery("select sum(l_extendedprice), l_orderkey from lineitem group by l_orderkey")
+    }
+
+    it("common prefix") {
+      // must be full index scan, then partialMapReduce on l_partkey, order by l_partkey
+      testQuery(
+        """select sum(l_extendedprice), l_orderkey, l_partkey
+          |from lineitem
+          |group by l_orderkey, l_partkey
+          |order by l_orderkey, l_partkey""".stripMargin)
+    }
+  }
+
   it("mapReduce with empty value") {
     testQuery(
       """select

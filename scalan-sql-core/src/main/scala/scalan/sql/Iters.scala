@@ -49,9 +49,35 @@ trait Iters extends ScalanDsl {
                          reduceValue: Rep[((V, Row)) => Unit]
                         ): RIter[Struct] = delayInvoke
 
+    /** Use instead of mapReduce when input is sorted by some prefix of the grouping.
+      * @param prefixComparator returns true when two rows belong to the same group
+      * @tparam K will be a pair of structs: group key and hash key (second may be empty)
+      */
+    def partialMapReduce[K, V](prefixComparator: Rep[((Row, Row)) => Boolean],
+                               mapKey: Rep[Row => K],
+                               packKey: Rep[Row => String],
+                               newValue: Rep[Thunk[V]],
+                               reduceValue: Rep[((V, Row)) => V]
+                              ): RIter[Struct] = delayInvoke
+
+    def partialMapReduceU[K, V](prefixComparator: Rep[((Row, Row)) => Boolean],
+                                mapKey: Rep[Row => K],
+                                packKey: Rep[Row => String],
+                                newValue: Rep[Thunk[V]],
+                                reduceValue: Rep[((V, Row)) => Unit]
+                               ): RIter[Struct] = delayInvoke
+
     // sort takes a less-than predicate, sortBy takes an Ordering.compare-like function
     def sort(comparator: Rep[((Row, Row)) => Boolean]): RIter[Row] = delayInvoke
     def sortBy(comparator: Rep[((Row, Row)) => Int]): RIter[Row] = delayInvoke
+
+    /**
+      * Use when input is already sorted on some prefix of desired ordering
+      * @param prefixComparator return true when both rows belong to the same group
+      * @param suffixComparator compare rows within one group, return true if the first is less than the second
+      */
+    def partialSort(prefixComparator: Rep[((Row, Row)) => Boolean], suffixComparator: Rep[((Row, Row)) => Boolean]): RIter[Row] =
+      delayInvoke
 
     // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
     def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)] = delayInvoke
@@ -179,7 +205,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "takeWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" =>
+        case "filter" | "takeWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" =>
           receiver.elem
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]
@@ -196,6 +222,12 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
         case "mapReduce" | "mapReduceU" =>
           val mapKey = args(0).asInstanceOf[Exp[_]]
           val newValue = args(2).asInstanceOf[Exp[_]]
+          val eK = mapKey.elem.asInstanceOf[FuncElem[_, _]].eRange
+          val eV = newValue.elem.asInstanceOf[ThunkElem[_]].eItem
+          iterElement(keyValElem(eK, eV))
+        case "partialMapReduce" | "partialMapReduceU" =>
+          val mapKey = args(1).asInstanceOf[Exp[_]]
+          val newValue = args(3).asInstanceOf[Exp[_]]
           val eK = mapKey.elem.asInstanceOf[FuncElem[_, _]].eRange
           val eV = newValue.elem.asInstanceOf[ThunkElem[_]].eItem
           iterElement(keyValElem(eK, eV))

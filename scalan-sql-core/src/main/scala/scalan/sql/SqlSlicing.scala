@@ -56,6 +56,23 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
               f.marked(FuncMarking(PairMarking(mDom, mDom), mBoolean)))
         }
 
+        case IterMethods.partialSort(_xs, _f1, _f2) => outMark match {
+          case IterMarking(_, mA: SliceMarking[a]) =>
+            val xs = _xs.asRep[Iter[a]]
+            val f1 = _f1.asRep[((a,a)) => Boolean]
+            val f2 = _f2.asRep[((a,a)) => Boolean]
+            val mBoolean = element[Boolean].toMarking
+            val f1m = analyzeFunc(f1, mBoolean)
+            val PairMarking(mD1,_) = f1m.mDom
+            val f2m = analyzeFunc(f2, mBoolean)
+            val PairMarking(mD2,_) = f2m.mDom
+            val mDom = mD1.asMark[a].join(mD2.asMark[a]).join(mA)
+            val mxs = getMark(xs) |/| (All, mDom)
+            Seq[MarkedSym](
+              (xs, mxs), (thisSym.asRep[Iter[a]], mxs),
+              f1.marked(FuncMarking(PairMarking(mDom, mDom), mBoolean)))
+        }
+
         case IterMethods.filter(_xs, f: RFunc[a, Boolean] @unchecked) => outMark match {
           case IterMarking(_, inner) =>
             val xs = _xs.asRep[Iter[a]]
@@ -102,6 +119,32 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
             val mPack = analyzeFunc(pack, StringElement.toMarking)
             assert(mPack.mDom == mA2)
             Seq((xs, xs.elem.toMarking |/| (All, mA1.asMark[a].join(mA2.asMark[a]))))
+        }
+
+        case IterMethods.partialMapReduce(_xs: RIter[a] @unchecked, _eq, _mapKey: RFunc[_, k], _packKey, _newValue: Th[v] @unchecked, _reduce) => outMark match {
+          case IterMarking(_, mKeyVal: StructMarking[_]) =>
+            val xs = _xs.asRep[a]
+            val eq = _eq.asRep[((a, a)) => Boolean]
+            val mapKey = _mapKey.asRep[a => k]
+            val reduce = _reduce.asRep[((v, a)) => v]
+            val pack = _packKey.asRep[k => String]
+            val newValue = _newValue.asRep[Thunk[v]]
+            implicit val eA = mapKey.elem.eDom
+            implicit val eK = mapKey.elem.eRange
+            implicit val eV = newValue.elem.eItem
+
+            val mVal = mKeyVal.get("val").getOrElse(EmptyMarking(eV)).asMark[v]
+            val FuncMarking(PairMarking(mV1, mA1), mV3) = analyzeFunc(reduce, mVal)
+            val mVal1 = mVal.join(mV1.asMark[v]).join(mV3.asMark[v])
+            val ThunkMarking(mVal2) = analyzeThunk(newValue, mVal1)
+
+            val mKey = mKeyVal.get("key").getOrElse(EmptyMarking(eK)).asMark[k]
+            val FuncMarking(mA2, _) = analyzeFunc(mapKey, mKey)
+            val mPack = analyzeFunc(pack, StringElement.toMarking)
+
+            val FuncMarking(PairMarking(mA3, mA4), _) = analyzeFunc(eq, BooleanElement.toMarking)
+            assert(mA3 == mA4)
+            Seq((xs, xs.elem.toMarking |/| (All, mA1.asMark[a].join(mA2.asMark[a]).join(mA3.asMark[a]))))
         }
 
         case IterMethods.join(_ls, _rs,

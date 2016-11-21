@@ -35,9 +35,27 @@ trait Relations extends ScalanDsl {
                         reduceValue: Rep[((V, Row)) => V]
                        ): RRelation[Struct] = delayInvoke
 
+    /** Use instead of mapReduce when input is sorted by some prefix of the grouping.
+      * @param prefixComparator returns true when two rows belong to the same group
+      * @tparam K will be a pair of structs: group key and hash key (second may be empty)
+      */
+    def partialMapReduce[K, V](prefixComparator: Rep[((Row, Row)) => Boolean],
+                               mapKey: Rep[Row => K],
+                               newValue: Rep[Thunk[V]],
+                               reduceValue: Rep[((V, Row)) => V]
+                              ): RRelation[Struct] = delayInvoke
+
     // sort takes a less-than predicate, sortBy takes an Ordering.compare-like function
     def sort(comparator: Rep[((Row, Row)) => Boolean]): RRelation[Row] = delayInvoke
     def sortBy(comparator: Rep[((Row, Row)) => Int]): RRelation[Row] = delayInvoke
+
+    /**
+      * Use when input is already sorted on some prefix of desired ordering
+      * @param prefixComparator return true when both rows belong to the same group
+      * @param suffixComparator compare rows within one group, return true if the first is less than the second
+      */
+    def partialSort(prefixComparator: Rep[((Row, Row)) => Boolean], suffixComparator: Rep[((Row, Row)) => Boolean]): RRelation[Row] =
+      delayInvoke
 
     def hashJoin[B, Key](other: RRelation[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], leftIsOuter: Boolean /*, joinType: JoinType*/): RRelation[(Row, B)] = delayInvoke
 
@@ -76,11 +94,25 @@ trait Relations extends ScalanDsl {
       iterBasedRelation(iter1)
     }
 
+    override def partialMapReduce[K, V](prefixComparator: Rep[((Row, Row)) => Boolean],
+                                        mapKey: Rep[Row => K],
+                                        newValue: Rep[Thunk[V]],
+                                        reduceValue: Rep[((V, Row)) => V]
+                                       ): RRelation[Struct] = {
+      val packKey: Rep[(Row) => String] =
+        fun[Row, String] { x => pack(mapKey(x).asRep[(Struct, Struct)]._2) }
+      val iter1 = iter.partialMapReduce(prefixComparator, mapKey, packKey, newValue, reduceValue)
+      iterBasedRelation(iter1)
+    }
+
     // sort takes a less-than predicate, sortBy takes an Ordering.compare-like function
     override def sort(comparator: Rep[((Row, Row)) => Boolean]): RRelation[Row] =
       IterBasedRelation(iter.materialize(cloneFun(eRow)).sort(comparator))
     override def sortBy(comparator: Rep[((Row, Row)) => Int]): RRelation[Row] =
       IterBasedRelation(iter.materialize(cloneFun(eRow)).sortBy(comparator))
+
+    override def partialSort(prefixComparator: Rep[((Row, Row)) => Boolean], suffixComparator: Rep[((Row, Row)) => Boolean]) =
+      IterBasedRelation(iter.materialize(cloneFun(eRow)).partialSort(prefixComparator, suffixComparator))
 
     // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
     override def hashJoin[B, Key](other: RRelation[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], leftIsOuter: Boolean /*, joinType: JoinType*/): RRelation[(Row, B)] = {
@@ -199,7 +231,7 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case relationElem: RelationElem[_, _] =>
       m.getName match {
-        case "filter" | "sort" | "sortBy" =>
+        case "filter" | "sort" | "sortBy" | "partialSort" =>
           receiver.elem
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]
@@ -212,6 +244,12 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
         case "mapReduce" =>
           val mapKey = args(0).asInstanceOf[Exp[_]]
           val newValue = args(1).asInstanceOf[Exp[_]]
+          val eK = mapKey.elem.asInstanceOf[FuncElem[_, _]].eRange
+          val eV = newValue.elem.asInstanceOf[ThunkElem[_]].eItem
+          relationElement(keyValElem(eK, eV))
+        case "partialMapReduce" =>
+          val mapKey = args(1).asInstanceOf[Exp[_]]
+          val newValue = args(2).asInstanceOf[Exp[_]]
           val eK = mapKey.elem.asInstanceOf[FuncElem[_, _]].eRange
           val eV = newValue.elem.asInstanceOf[ThunkElem[_]].eItem
           relationElement(keyValElem(eK, eV))
