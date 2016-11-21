@@ -295,6 +295,18 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
         case _ => None
       }
     }
+
+    object byRowids {
+      def unapply(d: Def[_]): Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Long]) forSome {type Row; type B}] = d match {
+        case MethodCall(receiver, method, Seq(relation, f, _*), _) if receiver.elem.isInstanceOf[TableScannableElem[_]] && method.getName == "byRowids" =>
+          Some((receiver, relation, f)).asInstanceOf[Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Long]) forSome {type Row; type B}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Long]) forSome {type Row; type B}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
   }
 
   def mkTableScannable[Row]
@@ -312,8 +324,6 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
     extends AbsIndexScannable[Row](table, index, scanId, direction, fakeDep, kernelInput)
 
   object IndexScannableMethods {
-    // WARNING: Cannot generate matcher for method `isCovering`: Method's return type Boolean is not a Rep
-
     object sourceIter {
       def unapply(d: Def[_]): Option[Rep[IndexScannable[Row]] forSome {type Row}] = d match {
         case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[IndexScannableElem[_]] && method.getName == "sourceIter" =>

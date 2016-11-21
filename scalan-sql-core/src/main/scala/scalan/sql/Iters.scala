@@ -102,12 +102,11 @@ trait Iters extends ScalanDsl {
     def seekIndex(keyValues: Rep[Array[Any]], operation: ComparisonOp): Rep[CursorIter[Row]] = delayInvoke
   }
 
-  abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
-
-  // TODO how to distinguish covering indices?
-  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
-    def isCovering: Boolean = Iters.this.isCovering(table.asValue, index.asValue, eRow)
+  abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
+    def byRowids[B](iter: RIter[B], f: Rep[B => Long]): RIter[Row] = delayInvoke
   }
+
+  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.
@@ -159,7 +158,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "takeWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" =>
+        case "filter" | "takeWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" =>
           receiver.elem
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]

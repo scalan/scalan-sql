@@ -81,23 +81,27 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   case class Plan[A](node: Exp[Relation[A]], constraints: ConstraintSet, ordering: SqlOrdering) {
     val eRow = node.elem.eRow
-    // TODO Fix cost calculation
-    // for now just assume plan which has fewest scans (and most searches) is the best
+    // TODO Improve cost calculation
     lazy val cost = {
       val graph = new PGraph(node)
+      val FULL_SCAN_COST = 100.0
       val costs = graph.scheduleAll.iterator.map {
         te => te.rhs match {
           case ScannableMethods.fullScan(_) =>
-            1000.0
+            // sequential scan, relatively cheap
+            FULL_SCAN_COST
           case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
             // TODO check how precise bounds are
             val index = is.index.asValue
-            if (index.isPrimaryKey || is.isCovering)
+            if (index.isPrimaryKey)
               1.0
             else if (index.isUnique)
               2.0
             else
               5.0
+          case TableScannableMethods.byRowids(_, _, _) =>
+            // lots of seeks
+            500.0
           case RelationMethods.sort(_, _) | RelationMethods.sortBy(_, _) =>
             10000.0
           case RelationMethods.partialSort(_, _, _) =>
@@ -227,16 +231,46 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     val table = resolver.table(tableName)
     val allIndices = resolver.indices(tableName)
     val scanId = scan.id
+
+    def attributesToElem(attributes: Seq[ResolvedTableAttribute]) = {
+      val fieldElems = attributes.map(attr => (attr.name, sqlTypeToElem(attr.sqlType)))
+      structElement(fieldElems)
+    }
+
     // Do not treat case of empty usedAttributes separately for now
-    val usedAttributes = inputs.usedAttributes(scan)
+    val usedAttributes = inputs.usedAttributes(scan).toSeq.sortBy(_.index)
+    val eUsedAttributes = attributesToElem(usedAttributes)
 
     val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
 
-    val eUsedAttributes = structElement(
-      usedAttributes.toSeq.sortBy(_.index).map(attr => (attr.name, sqlTypeToElem(attr.sqlType)))
-    )
+    val tableScannable =
+      TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eUsedAttributes)
+    val tableRelation = tableScannable.fullScan()
+    val tablePlan = Plan(tableRelation, ConstraintSet.empty, tableScanOrdering(table, scanId))
+
+    // if table has rowid (even implicit), it's the real key of b-tree
+    val realKeyColumnNames =
+      if (table.withoutRowId)
+        table.primaryKey
+      else
+        scalan.rowidColumn(table).toList
+
     val indexPlans = allIndices.flatMap { index =>
-      val columns = index.columns
+      val columns = {
+        val explicitColumns = index.columns
+        val explicitColumnNames = explicitColumns.map(_.name)
+        val extraColumnsNames =
+          if (isIntegerPkIndex(index, table)) {
+            // all columns except for rowid
+            table.columns.map(_.name).diff(explicitColumnNames)
+          } else {
+            // realKeyColumnNames is always small (usually 1 element), so converting explicitColumnNames to set isn't useful
+            realKeyColumnNames.filterNot(explicitColumnNames.contains)
+          }
+        // since extra columns are unique given the explicit columns, they can be considered Ascending or Descending
+        val extraColumns = extraColumnsNames.map(IndexedColumn(_, None, Ascending))
+        explicitColumns ::: extraColumns
+      }
       val columnNames = columns.map(_.name)
 
       def boundsLoop(columnNames: List[String]): (SearchBounds, ConstraintSet) = columnNames match {
@@ -331,25 +365,57 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       val (bounds, constraints) = boundsLoop(columnNames)
       if (!bounds.isEmpty || goodForOrder.isDefined || goodForGroup) {
         val direction = goodForOrder.getOrElse(Ascending)
-        val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eUsedAttributes)
-        val relation = scannable.search(bounds)
         val indexScanOrdering =
-          for (IndexedColumn(name, _, colDirection) <- index.columns)
+          for (IndexedColumn(name, _, colDirection) <- columns)
             yield {
               val attr = forceResolvedTableAttributeByName(table, scanId, name)
               val attrDirection = colDirection.inverseIfDescending(direction)
               SortSpec(attr, attrDirection, NullsOrderingUnspecified)
             }
+
+        val (usedAttributesInIndex, usedAttributesOutsideIndex) =
+          usedAttributes.partition(attr => columnNames.contains(attr.name))
+
+        val relation = if (usedAttributesOutsideIndex.isEmpty) {
+          // the index is covering, there is no need to read from the table
+          val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eUsedAttributes)
+          scannable.search(bounds)
+        } else {
+          // if we need to read from the table, add all key columns first
+          val missingKeyColumns =
+            realKeyColumnNames.filterNot(usedAttributesInIndex.map(_.name).contains)
+          // TODO is this correct in all cases? In particular, if table contains columns named `rowid`, `_rowid_`?
+          val missingAttributes =
+            missingKeyColumns.map(forceResolvedTableAttributeByName(table, scanId, _))
+          val allAttributesToReadFromIndex = usedAttributesInIndex ++ missingAttributes
+          attributesToElem(allAttributesToReadFromIndex) match {
+            case eIndexRow: Elem[indexRow] =>
+              implicit val _: Elem[indexRow] = eIndexRow
+              val indexScannable =
+                IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eIndexRow)
+              val indexRelation = indexScannable.search(bounds)
+              val f = fun[indexRow, Long] { x =>
+                // TODO handle WITHOUT ROWID case (more than 1 column here)
+                // needs support on C++ side as well
+                val List(rowidFieldNameInIndexRow) = realKeyColumnNames
+                val rowid = x.asRep[Struct].getUntyped(rowidFieldNameInIndexRow)
+                (rep_getElem(rowid): TypeDesc) match {
+                  case IntElement =>
+                    rowid.asRep[Int].toLong
+                  case LongElement =>
+                    rowid.asRep[Long]
+                  case elem =>
+                    !!!(s"rowid in index ${index.name} on table ${index.tableName} found under name ${rowidFieldNameInIndexRow}, but its type is $elem instead of INTEGER or BIGINT")
+                }
+              }
+              tableScannable.byRowids(indexRelation, f)
+          }
+        }
         val plan = Plan(relation, constraints, indexScanOrdering)
         Some(plan)
       } else
         None
     }
-
-    val relation =
-      TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eUsedAttributes).fullScan()
-
-    val tablePlan = Plan(relation, ConstraintSet.empty, tableScanOrdering(table, scanId))
 
     tablePlan +: indexPlans
   }

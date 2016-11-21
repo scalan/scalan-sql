@@ -26,7 +26,7 @@ class SqlParser {
             pkColumns
         }.orElse(columns.flatMap {
           case Column(name, _, constraints) =>
-            constraints.collect { case PrimaryKeyC(direction, _, _) => List(IndexedColumn(name, "", direction)) }
+            constraints.collect { case PrimaryKeyC(direction, _, _) => List(IndexedColumn(name, None, direction)) }
         }.headOption)
 
         pkColumns.map(Index(s"${name}_pk", name, _, isUnique = true, isPrimaryKey = true))
@@ -286,7 +286,7 @@ class SqlParser {
         }
 
     lazy val indexedColumn = ident ~ collationClause.? ~ direction ^^ {
-      case name ~ optCollSeq ~ dir => IndexedColumn(name, optCollSeq.getOrElse("BINARY"), dir)
+      case name ~ optCollSeq ~ dir => IndexedColumn(name, optCollSeq, dir)
     }
 
     lazy val indexedColumnList = "(" ~> repsep(indexedColumn, ",") <~ ")"

@@ -186,17 +186,23 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
       ordOp(l, r)((ord, _) => OrderingGTEQ(ord))
   }
 
-  def isCovering(table: Table, index: Index, eRow: Elem[_]) = eRow match {
-    case se: StructElem[_] =>
-      val indexColumns = index.columns.map(_.name) ++ rowidColumn(table)
-      se.fieldNames.forall(indexColumns.contains)
-  }
-
   // TODO SQLite-specific
   def rowidColumn(table: Table) = table.columns.collectFirst {
     case c if c.ctype == IntType && c.constraints.exists(_.isInstanceOf[PrimaryKeyC]) =>
       c.name
   }.orElse(implicitRowidColumnName(table))
+
+  def isIntegerPkIndex(index: Index, table: Table) = {
+    index.isPrimaryKey && index.columns.length == 1 && {
+      val column = index.columns.head
+      column.direction == Ascending &&
+        (table.columns.find(_.name == column.name) match {
+          case None =>
+            !!!(s"Index $index on single column not in table")
+          case Some(col) => col.ctype == IntType
+        })
+    }
+  }
 }
 
 trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with KernelInputsDslStd with ItersDslStd with RelationsDslStd with ScalanSql {

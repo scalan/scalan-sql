@@ -195,6 +195,10 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
           val mxs = xs.elem.toMarking |/| (All, EmptyMarking(eA))
           Seq[MarkedSym](xs.marked(mxs))
 
+        case TableIterMethods.byRowids(xs: RIter[a], ys: RIter[b] @unchecked, _f) =>
+          val FuncMarking(mB, _) = analyzeFunc(_f, LongElement.toMarking)
+          Seq[MarkedSym](xs.marked(outMark.asMark[Iter[a]]), ys.marked(getMark(ys) |/| (All, mB)))
+
         case Clone(x) =>
           Seq[MarkedSym](x.marked(outMark))
 
@@ -357,6 +361,22 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
       val eS = xs.elem.eRow
       assert(eS == mA.projectedElem, s"$eS == ${mA.projectedElem}")
       xs.isEmpty
+
+    case TableIterMethods.byRowids(
+    IsSliced(_xs: RIter[a] @unchecked, im),
+    _ys,
+    f: RFunc[b, Long] @unchecked) =>
+      val xs = _xs.asRep[TableIter[a]]
+      Sliced(xs.byRowids(_ys.asRep[Iter[b]], f), im.asMark[Iter[a]])
+
+    case TableIterMethods.byRowids(
+    xs,
+    IsSliced(_ys: RIter[b1] @unchecked, IterMarking(All, mB: SliceMarking[b])),
+    _f: RFunc[_, Long] @unchecked) =>
+      val f = _f.asRep[b => Long]
+      val ys = _ys.asRep[Iter[b1]]
+      val fs = sliceIn(f, mB).asRep[b1 => Long]
+      xs.byRowids(ys, fs)
 
     case Clone(IsSliced(p, m)) =>
       Sliced(clone(p), m)

@@ -100,7 +100,8 @@ object SqlAST {
 
   // TODO first parameter should be expr: Expression, but name resolution inside table defs would need to be
   // fixed first
-  case class IndexedColumn(name: String, collationSequence: String, direction: SortDirection)
+  // Default collation sequence may depend on database and SqlResolver
+  case class IndexedColumn(name: String, optCollationSequence: Option[String], direction: SortDirection)
 
   sealed trait ColumnConstraint
   case class PrimaryKeyC(direction: SortDirection, onConflict: OnConflict, isAutoIncrement: Boolean) extends ColumnConstraint

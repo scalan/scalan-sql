@@ -2,7 +2,6 @@ package scalan.sql
 
 import java.lang.reflect.Method
 import scalan._
-import scalan.common.Lazy
 import scala.reflect.runtime.universe._
 import scalan.sql.parser.SqlAST.{ComparisonOp, Index, SortDirection, Table}
 import scala.reflect.runtime.universe.{WeakTypeTag, weakTypeTag}
@@ -412,6 +411,17 @@ trait ItersExp extends ScalanExp with ItersDsl {
     extends AbsTableIter[Row](table, scanId, direction, fakeDep, kernelInput)
 
   object TableIterMethods {
+    object byRowids {
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Long]) forSome {type Row; type B}] = d match {
+        case MethodCall(receiver, method, Seq(iter, f, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "byRowids" =>
+          Some((receiver, iter, f)).asInstanceOf[Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Long]) forSome {type Row; type B}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Long]) forSome {type Row; type B}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
   }
 
   def mkTableIter[Row]
@@ -429,7 +439,6 @@ trait ItersExp extends ScalanExp with ItersDsl {
     extends AbsIndexIter[Row](table, index, scanId, direction, fakeDep, kernelInput)
 
   object IndexIterMethods {
-    // WARNING: Cannot generate matcher for method `isCovering`: Method's return type Boolean is not a Rep
   }
 
   def mkIndexIter[Row]
