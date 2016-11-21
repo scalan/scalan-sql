@@ -214,6 +214,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     findInput(resolver.currScope)
   }
 
+  def forceResolvedTableAttributeByName(table: Table, tableId: Int, columnName: String) =
+    resolver.resolvedTableAttributeByName(table, tableId, columnName).getOrElse {
+      throw new SqlException(s"Column $columnName not found in table ${table.name}")
+    }
+
   def generateScan(inputs: ExprInputs, scan: Scan): Plans[_] = {
     val currentLambdaArg = this.currentLambdaArg(inputs)
     val fakeDep = extraDeps(currentLambdaArg)
@@ -250,7 +255,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 }
               }
 
-              val attr = ResolvedTableAttribute(table, scanId, name)
+              val attr = forceResolvedTableAttributeByName(table, scanId, name)
               val eqConstraints = constraintsInScope(Eq)
               if (eqConstraints.nonEmpty) {
                 // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
@@ -330,7 +335,11 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         val relation = scannable.search(bounds)
         val indexScanOrdering =
           for (IndexedColumn(name, _, colDirection) <- index.columns)
-            yield SortSpec(ResolvedTableAttribute(table, scanId, name), colDirection.inverseIfDescending(direction), NullsOrderingUnspecified)
+            yield {
+              val attr = forceResolvedTableAttributeByName(table, scanId, name)
+              val attrDirection = colDirection.inverseIfDescending(direction)
+              SortSpec(attr, attrDirection, NullsOrderingUnspecified)
+            }
         val plan = Plan(relation, constraints, indexScanOrdering)
         Some(plan)
       } else
@@ -352,7 +361,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       case None =>
         Nil
       case Some(name) =>
-        List(SortSpec(ResolvedTableAttribute(table, scanId, name), Ascending, NullsOrderingUnspecified))
+        val attr = forceResolvedTableAttributeByName(table, scanId, name)
+        List(SortSpec(attr, Ascending, NullsOrderingUnspecified))
     }
   }
 

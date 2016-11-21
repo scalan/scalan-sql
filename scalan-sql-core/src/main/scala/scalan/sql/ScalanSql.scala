@@ -192,9 +192,11 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
       se.fieldNames.forall(indexColumns.contains)
   }
 
-  def rowidColumn(table: Table) = table.columns.find {
-    c => c.ctype == IntType && c.constraints.exists(_.isInstanceOf[PrimaryKeyC])
-  }.map(_.name)
+  // TODO SQLite-specific
+  def rowidColumn(table: Table) = table.columns.collectFirst {
+    case c if c.ctype == IntType && c.constraints.exists(_.isInstanceOf[PrimaryKeyC]) =>
+      c.name
+  }.orElse(implicitRowidColumnName(table))
 }
 
 trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with KernelInputsDslStd with ItersDslStd with RelationsDslStd with ScalanSql {

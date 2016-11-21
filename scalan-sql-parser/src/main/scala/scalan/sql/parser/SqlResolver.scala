@@ -330,6 +330,20 @@ class SqlResolver(val schema: Schema) {
 
   case class Binding(scope: String, path: List[Selector])
 
+  // This is SQLite-specific implementation, override for other DBs
+  /** call only after ensuring there is no column with this name! */
+  protected def isImplicitRowidColumn(columnName: String, table: Table) =
+    (columnName == "rowid" || columnName == "_rowid_" || columnName == "oid") && !table.withoutRowId
+
+  def resolvedTableAttributeByName(table: Table, tableId: Int, columnName: String) = {
+    table.columns.indexWhere(_.name == columnName) match {
+      case -1 if !isImplicitRowidColumn(columnName, table) =>
+        None
+      case i =>
+        Some(ResolvedTableAttribute(table, tableId, i))
+    }
+  }
+
   abstract class Context {
     def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute]
     def resolveAggregate(agg: AggregateExpr): Option[ResolvedAttribute] = None
@@ -349,11 +363,7 @@ class SqlResolver(val schema: Schema) {
   case class TableContext(table: Table, id: Int) extends Context {
     def resolveColumn(ref: UnresolvedAttribute): Option[ResolvedAttribute] =
       ifQualifierMatches(ref.table) {
-        table.columns.indexWhere(c => c.name == ref.name) match {
-          case -1 => None
-          case i =>
-            Some(ResolvedTableAttribute(table, id, i))
-        }
+        resolvedTableAttributeByName(table, id, ref.name)
       }
 
     def resolveStar(qualifier: Option[String]) =

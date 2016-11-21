@@ -426,17 +426,23 @@ object SqlAST {
     override def noParentheses = true
   }
   case class ResolvedTableAttribute(table: Table, tableId: Int, index: Int) extends ResolvedAttribute {
-    val column = table.columns(index)
+    val column = index match {
+      case -1 if !table.withoutRowId =>
+        val name = implicitRowidColumnName(table).get
+        Column(name, IntType, Nil)
+      case _ => table.columns(index)
+    }
     val name = column.name
     val sqlType = column.ctype
     override def toString = s"[Resolved]${table.name}{$tableId}.$name"
   }
-  object ResolvedTableAttribute {
-    def apply(table: Table, tableId: Int, columnName: String): ResolvedTableAttribute = {
-      val i = table.columns.zipWithIndex.find(_._1.name == columnName).get._2
-      ResolvedTableAttribute(table, tableId, i)
-    }
-  }
+  def implicitRowidColumnName(table: Table) = if (!table.withoutRowId) {
+    val tableColumnNames = table.columns.map(_.name).toSet
+    // next() call is safe, since tableColumnNames is finite
+    Some(Iterator.iterate("_rowid_")("_" + _ + "_").filterNot(tableColumnNames.contains).next())
+  } else
+    None
+
   case class ResolvedProjectedAttribute(parent: Expression, alias: Option[String], index: Int) extends ResolvedAttribute {
     override def toString = "[Resolved]" + (alias match {
       case None => p(parent)
