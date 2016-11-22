@@ -25,6 +25,19 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
           Seq[MarkedSym]((xs, mxs), (thisSym.asRep[Iter[A]], mxs), f.marked(FuncMarking(mDom, mRange)))
       }
 
+      def sortLike[A, B](xs: Rep[Iter[A]], fs: Seq[Rep[((A, A)) => B]]) = outMark match {
+        case IterMarking(_, mA: SliceMarking[A] @unchecked) =>
+          val mRange = fs.head.elem.eRange.toMarking
+          val mDom = fs.foldLeft(mA) { (acc, f) =>
+            val fm = analyzeFunc(f, mRange)
+            val PairMarking(mD, _) = fm.mDom
+            acc.join(mD)
+          }
+          val mFuncFinal = FuncMarking(PairMarking(mDom, mDom), mRange)
+          val mxs = getMark(xs) |/| (All, mDom)
+          Seq[MarkedSym]((xs, mxs), (thisSym.asRep[Iter[A]], mxs)) ++ fs.map(_.marked(mFuncFinal))
+      }
+
       d match {
         case IterMethods.map(_xs, f: RFunc[a, b]) => outMark match {
           case IterMarking(_, mB_out) =>
@@ -42,50 +55,14 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
             Seq((xs, getMark(xs) |/| (All, lm.mDom)))
         }
 
-        case IterMethods.sortBy(_xs, _f) => outMark match {
-          case IterMarking(_, mA: SliceMarking[a]) =>
-            val xs = _xs.asRep[Iter[a]]
-            val f = _f.asRep[((a,a)) => Int]
-            val mInt = element[Int].toMarking
-            val fm = analyzeFunc(f, mInt)
-            val PairMarking(mD,_) = fm.mDom
-            val mDom = mD.asMark[a].join(mA)
-            val mxs = getMark(xs) |/| (All, mDom)
-            Seq[MarkedSym](
-              (xs, mxs), (thisSym.asRep[Iter[a]], mxs),
-              f.marked(FuncMarking(PairMarking(mDom, mDom), mInt)))
-        }
+        case IterMethods.sortBy(xs: RIter[a] @unchecked, f) =>
+          sortLike(xs, Seq(f.asRep[((a, a)) => Int]))
 
-        case IterMethods.sort(_xs, _f) => outMark match {
-          case IterMarking(_, mA: SliceMarking[a]) =>
-            val xs = _xs.asRep[Iter[a]]
-            val f = _f.asRep[((a,a)) => Boolean]
-            val mBoolean = element[Boolean].toMarking
-            val fm = analyzeFunc(f, mBoolean)
-            val PairMarking(mD,_) = fm.mDom
-            val mDom = mD.asMark[a].join(mA)
-            val mxs = getMark(xs) |/| (All, mDom)
-            Seq[MarkedSym](
-              (xs, mxs), (thisSym.asRep[Iter[a]], mxs),
-              f.marked(FuncMarking(PairMarking(mDom, mDom), mBoolean)))
-        }
+        case IterMethods.sort(xs: RIter[a] @unchecked, f) =>
+          sortLike(xs, Seq(f.asRep[((a, a)) => Boolean]))
 
-        case IterMethods.partialSort(_xs, _f1, _f2) => outMark match {
-          case IterMarking(_, mA: SliceMarking[a]) =>
-            val xs = _xs.asRep[Iter[a]]
-            val f1 = _f1.asRep[((a,a)) => Boolean]
-            val f2 = _f2.asRep[((a,a)) => Boolean]
-            val mBoolean = element[Boolean].toMarking
-            val f1m = analyzeFunc(f1, mBoolean)
-            val PairMarking(mD1,_) = f1m.mDom
-            val f2m = analyzeFunc(f2, mBoolean)
-            val PairMarking(mD2,_) = f2m.mDom
-            val mDom = mD1.asMark[a].join(mD2.asMark[a]).join(mA)
-            val mxs = getMark(xs) |/| (All, mDom)
-            Seq[MarkedSym](
-              (xs, mxs), (thisSym.asRep[Iter[a]], mxs),
-              f1.marked(FuncMarking(PairMarking(mDom, mDom), mBoolean)))
-        }
+        case IterMethods.partialSort(xs: RIter[a] @unchecked, f1, f2) =>
+          sortLike(xs, Seq(f1.asRep[((a, a)) => Boolean], f2.asRep[((a, a)) => Boolean]))
 
         case IterMethods.filter(xs: RIter[a], f) =>
           filterLike(xs, f.asRep[a => Boolean])
