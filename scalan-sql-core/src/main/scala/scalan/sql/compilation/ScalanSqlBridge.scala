@@ -146,7 +146,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   def generateOperator(op: Operator, inputs: ExprInputs): Plans[_] = ((op match {
     case s: Scan =>
-      generateScan(inputs, s)
+      generateScan(s, None, inputs)
     case join: Join =>
       generateJoin(join, None, inputs)
     case Aggregate(p, groupedBy, aggregates) =>
@@ -160,6 +160,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case Filter(p, predicate) =>
       val inputs1 = inputs.addConstraints(predicate)
       p match {
+        case scan: Scan =>
+          generateScan(scan, Some(predicate), inputs1)
         case join: Join =>
           generateJoin(join, Some(predicate), inputs1)
         case _ =>
@@ -240,7 +242,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       throw new SqlException(s"Column $columnName not found in table ${table.name}")
     }
 
-  def generateScan(inputs: ExprInputs, scan: Scan): Plans[_] = {
+  def generateScan(scan: Scan, filter: Option[Expression], inputs: ExprInputs): Plans[_] = {
     val currentLambdaArg = this.currentLambdaArg(inputs)
     val fakeDep = extraDeps(currentLambdaArg)
 
@@ -260,10 +262,21 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
 
+    val filterClauses = filter.fold(Seq.empty[Expression])(conjunctiveClauses)
+    def filterByClauses[A](plan: Plan[A], clauses: Seq[Expression]) = {
+      if (clauses.isEmpty)
+        plan
+      else {
+        val pred1 = clauses.reduce(BinOpExpr(SqlAST.And, _, _))
+        generateFilter(plan, scan, pred1, inputs)
+      }
+    }
+
     val tableScannable =
       TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eUsedAttributes)
     val tableRelation = tableScannable.fullScan()
-    val tablePlan = Plan(tableRelation, ConstraintSet.empty, tableScanOrdering(table, scanId))
+    val tableScanUnfilteredPlan = Plan(tableRelation, ConstraintSet.empty, tableScanOrdering(table, scanId))
+    val tablePlan = filterByClauses(tableScanUnfilteredPlan, filterClauses)
 
     // if table has rowid (even implicit), it's the real key of b-tree
     val realKeyColumnNames =
@@ -309,7 +322,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               val attr = forceResolvedTableAttributeByName(table, scanId, name)
               val eqConstraints = constraintsInScope(Eq)
               if (eqConstraints.nonEmpty) {
-                // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
+                // TODO as above, this is safe, but we should check that all values in fixed constraintsFromBounds are equal and that they satisfy other bounds
                 val (fixedValue, fixedValueExp) = eqConstraints.head
                 val newConstraint = BinOpExpr(Eq, attr, fixedValue)
                 val (foundBounds, foundConstraints) = boundsLoop(tail)
@@ -379,7 +392,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       }
       val goodForGroup = groupColumns.nonEmpty && hasCommonPrefix(columnNames, groupColumns)
 
-      val (bounds, constraints) = boundsLoop(columnNames)
+      val (bounds, constraintsFromBounds) = boundsLoop(columnNames)
       if (!bounds.isEmpty || goodForOrder.isDefined || goodForGroup) {
         val direction = goodForOrder.getOrElse(Ascending)
         val indexScanOrdering =
@@ -393,10 +406,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
         val (usedAttributesInIndex, usedAttributesOutsideIndex) =
           usedAttributes.partition(attr => columnNames.contains(attr.name))
 
-        val relation = if (usedAttributesOutsideIndex.isEmpty) {
+        def planFromBounds[A](eRow: Elem[A]) = {
+          val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
+          val searchRelation = scannable.search(bounds)
+          Plan(searchRelation, constraintsFromBounds, indexScanOrdering)
+        }
+
+        val plan = if (usedAttributesOutsideIndex.isEmpty) {
           // the index is covering, there is no need to read from the table
-          val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eUsedAttributes)
-          scannable.search(bounds)
+          val plan0 = planFromBounds(eUsedAttributes)
+          filterByClauses(plan0, filterClauses)
         } else {
           // if we need to read from the table, add all key columns first
           val missingKeyColumns =
@@ -410,7 +429,19 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               implicit val _: Elem[indexRow] = eIndexRow
               val indexScannable =
                 IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eIndexRow)
-              val indexRelation = indexScannable.search(bounds)
+              val indexRelation0 = indexScannable.search(bounds)
+
+              def usesAttributesOutsideIndex(x: Any): Boolean = x match {
+                case attr: ResolvedTableAttribute => usedAttributesOutsideIndex.contains(attr)
+                case p: Product => p.productIterator.exists(usesAttributesOutsideIndex)
+                case _ => false
+              }
+
+              // separate clauses which use only the columns in the index from those which don't,
+              // to minimize seeks
+              val (clausesInTable, clausesInIndex) = filterClauses.partition(usesAttributesOutsideIndex)
+              val plan0 = planFromBounds(eIndexRow)
+              val plan1 = filterByClauses(plan0, clausesInIndex)
               val f = fun[indexRow, Long] { x =>
                 // TODO handle WITHOUT ROWID case (more than 1 column here)
                 // needs support on C++ side as well
@@ -425,10 +456,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                     !!!(s"rowid in index ${index.name} on table ${index.tableName} found under name ${rowidFieldNameInIndexRow}, but its type is $elem instead of INTEGER or BIGINT")
                 }
               }
-              tableScannable.byRowids(indexRelation, f)
+              val tableByRowids = tableScannable.byRowids(plan1.node, f)
+              val plan2 = plan1.copy(node = tableByRowids)
+              filterByClauses(plan2, clausesInTable)
           }
         }
-        val plan = Plan(relation, constraints, indexScanOrdering)
+
         Some(plan)
       } else
         None
