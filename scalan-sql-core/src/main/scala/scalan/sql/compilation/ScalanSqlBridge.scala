@@ -91,23 +91,40 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
             // sequential scan, relatively cheap
             FULL_SCAN_COST
           case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
-            // TODO check how precise bounds are
+            // one or zero seeks + partial scan
             val index = is.index.asValue
-            if (index.isPrimaryKey)
-              1.0
-            else if (index.isUnique)
-              2.0
-            else
-              5.0
+            val proportion = bounds.fixedValues.length.toDouble / index.columns.length.toDouble
+            // we want 1.0 if proportion is 1, FULL_SCAN_COST if proportion is 0
+            val cost0 = math.pow(10.0, math.log10(FULL_SCAN_COST) * (1 - proportion))
+            val hasLowerBound = bounds.lowerBound.isDefined
+            val hasUpperBound = bounds.upperBound.isDefined
+            val mult1 =
+              if (hasLowerBound && hasUpperBound)
+                0.25
+              else if (hasLowerBound || hasUpperBound)
+                0.5
+              else
+                1.0
+            val mult2 =
+              if (isIntegerPkIndex(index, is.table.asValue))
+                0.05
+              else if (index.isUnique)
+                0.25
+              else
+                1.0
+            cost0 * mult1 * mult2
           case TableScannableMethods.byRowids(_, _, _) =>
             // lots of seeks
             500.0
           case RelationMethods.sort(_, _) | RelationMethods.sortBy(_, _) =>
-            10000.0
+            2000.0
           case RelationMethods.partialSort(_, _, _) =>
-            5000.0
+            1000.0
           case RelationMethods.partialMapReduce(_, _, _, _, _) =>
             50.0
+          case RelationMethods.filter(_, _) | RelationMethods.map(_, _) =>
+            // pipelined, no extra seeks
+            20.0
           case MethodCall(r, m, _, _) if
             r.elem.isInstanceOf[ScannableElem[_, _]] ||
               r.elem.isInstanceOf[RelationElem[_, _]] ||
