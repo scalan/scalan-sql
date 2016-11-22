@@ -77,7 +77,10 @@ class ConstraintSet private (val asMap: Map[ResolvedTableAttribute, Map[Comparis
   def simplify(predicate: Expression): Option[Expression] = {
     val clauses = conjunctiveClauses(predicate)
     val simplifiedClauses = clauses.flatMap(simplifyClause).distinct
-    simplifiedClauses.reduceOption(BinOpExpr(And, _, _))
+    if (simplifiedClauses.isEmpty)
+      None
+    else
+      Some(conjunction(simplifiedClauses))
   }
 
   private def simplifyClause(clause: Expression) = clause match {

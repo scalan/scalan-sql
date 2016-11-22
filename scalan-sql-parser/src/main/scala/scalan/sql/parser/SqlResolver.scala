@@ -208,7 +208,8 @@ class SqlResolver(val schema: Schema) {
           val cRight = withContext(right1) {
             resolvedColumns()
           }
-          (cLeft, cRight).zipped.map(BinOpExpr(Eq, _, _)).reduce(BinOpExpr(And, _, _))
+          val equalities = (cLeft, cRight).zipped.map(BinOpExpr(Eq, _, _))
+          conjunction(equalities)
         case Natural =>
           // requires implementing operatorType, won't support it yet
           throw new NotImplementedError("Natural joins not supported yet")
@@ -246,7 +247,7 @@ class SqlResolver(val schema: Schema) {
           pushedDown
         case _ =>
           // TODO check if repeated filters perform better due to lack of shortcutting
-          val remainingPredicate = remainingClauses.reduce(BinOpExpr(And, _, _))
+          val remainingPredicate = conjunction(remainingClauses)
           Filter(pushedDown, remainingPredicate)
       }
     }

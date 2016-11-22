@@ -267,7 +267,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       if (clauses.isEmpty)
         plan
       else {
-        val pred1 = clauses.reduce(BinOpExpr(SqlAST.And, _, _))
+        val pred1 = conjunction(clauses)
         generateFilter(plan, scan, pred1, inputs)
       }
     }

@@ -471,4 +471,5 @@ object SqlAST {
     case _ =>
       List(predicate)
   }
+  def conjunction(clauses: Seq[Expression]) = clauses.reduce(BinOpExpr(And, _, _))
 }
