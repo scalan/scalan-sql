@@ -393,13 +393,13 @@ trait ItersExp extends ScalanExp with ItersDsl {
       }
     }
 
-    object seekIndex {
-      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp) forSome {type Row}] = d match {
-        case MethodCall(receiver, method, Seq(keyValues, operation, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "seekIndex" =>
-          Some((receiver, keyValues, operation)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp) forSome {type Row}]]
+    object fromKeyWhile {
+      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean]) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(keyValues, operation, takeWhilePred, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fromKeyWhile" =>
+          Some((receiver, keyValues, operation, takeWhilePred)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean]) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp) forSome {type Row}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean]) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }

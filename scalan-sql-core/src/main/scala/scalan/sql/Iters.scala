@@ -99,7 +99,7 @@ trait Iters extends ScalanDsl {
     def fakeDep: Rep[Unit]
     def kernelInput: Rep[KernelInput]
 
-    def seekIndex(keyValues: Rep[Array[Any]], operation: ComparisonOp): Rep[CursorIter[Row]] = delayInvoke
+    def fromKeyWhile(keyValues: Rep[Array[Any]], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean]): Rep[CursorIter[Row]] = delayInvoke
   }
 
   abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
@@ -158,7 +158,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "takeWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" =>
+        case "filter" | "takeWhile" | "fromKeyWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" =>
           receiver.elem
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]
@@ -214,6 +214,11 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       IF (c) THEN iter ELSE Iter.empty(iter.selfType1.eRow)
     case IterMethods.takeWhile(iter: RIter[a], Def(ConstantLambda(c))) =>
       IF (c) THEN iter ELSE Iter.empty(iter.selfType1.eRow)
+    case IterMethods.filter(iter1 @ Def(IterMethods.takeWhile(iter, f)), g) if f == g =>
+      iter1
+    case IterMethods.takeWhile(iter1 @ Def(IterMethods.filter(iter, f)), g) if f == g =>
+      iter1
+      // TODO do we need rules for filter/filter, takeWhile/takeWhile, range/takeWhile fusion?
 
     case _ => super.rewriteDef(d)
   }

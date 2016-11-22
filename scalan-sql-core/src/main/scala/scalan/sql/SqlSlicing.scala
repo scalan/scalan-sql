@@ -14,6 +14,17 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
     override def getInboundMarkings[T](te: TableEntry[T], outMark: SliceMarking[T]): MarkedSyms = {
       val thisSym = te.sym
       val d = te.rhs
+
+      def filterLike[A](xs: Rep[Iter[A]], f: Rep[A => Boolean]) = outMark match {
+        case IterMarking(_, inner: SliceMarking[A] @unchecked) =>
+          val mOutMark = inner.asMark[A]
+          val mRange = element[Boolean].toMarking
+          val mf = analyzeFunc(f, mRange)
+          val mDom = mf.mDom.join(mOutMark)
+          val mxs = getMark(xs) |/| (All, mDom)
+          Seq[MarkedSym]((xs, mxs), (thisSym.asRep[Iter[A]], mxs), f.marked(FuncMarking(mDom, mRange)))
+      }
+
       d match {
         case IterMethods.map(_xs, f: RFunc[a, b]) => outMark match {
           case IterMarking(_, mB_out) =>
@@ -76,30 +87,14 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
               f1.marked(FuncMarking(PairMarking(mDom, mDom), mBoolean)))
         }
 
-        case IterMethods.filter(_xs, f: RFunc[a, Boolean] @unchecked) => outMark match {
-          case IterMarking(_, inner) =>
-            val xs = _xs.asRep[Iter[a]]
-            val mOutMark = inner.asMark[a]
-            val mRange = element[Boolean].toMarking
-            val mf = analyzeFunc(f, mRange)
-            val mDom = mf.mDom.join(mOutMark)
-            val mxs = getMark(xs) |/| (All, mDom)
-            Seq[MarkedSym]((xs, mxs), (thisSym.asRep[Iter[a]], mxs), f.marked(FuncMarking(mDom, mRange)))
-        }
+        case IterMethods.filter(xs: RIter[a], f) =>
+          filterLike(xs, f.asRep[a => Boolean])
 
-        case IterMethods.takeWhile(_xs, f: RFunc[a, Boolean] @unchecked) => outMark match {
-          case IterMarking(_, inner) =>
-            val xs = _xs.asRep[Iter[a]]
-            val mOutMark = inner.asMark[a]
-            val mRange = element[Boolean].toMarking
-            val mf = analyzeFunc(f, mRange)
-            val mDom = mf.mDom.join(mOutMark)
-            val mxs = getMark(xs) |/| (All, mDom)
-            Seq[MarkedSym]((xs, mxs), (thisSym.asRep[Iter[a]], mxs), f.marked(FuncMarking(mDom, mRange)))
-        }
+        case IterMethods.takeWhile(xs: RIter[a], f) =>
+          filterLike(xs, f.asRep[a => Boolean])
 
-        case CursorIterMethods.seekIndex(xs: Rep[CursorIter[a]] @unchecked, keyValues, op) =>
-          Seq[MarkedSym](xs -> outMark.asMark[Iter[a]])
+        case CursorIterMethods.fromKeyWhile(xs: RIter[a] @unchecked, _, _, f) =>
+          filterLike(xs, f.asRep[a => Boolean])
 
         case IterMethods.mapReduce(_xs: RIter[a] @unchecked, _mapKey: RFunc[_, k], _packKey, _newValue: Th[v] @unchecked, _reduce) => outMark match {
           case IterMarking(_, mKeyVal: StructMarking[_]) =>
@@ -251,9 +246,11 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
       assert(eS == sp.elem.eDom, s"${eS} == ${sp.elem.eDom}")
       Sliced(xs.takeWhile(sp), im.asMark[Iter[a]])
 
-    case CursorIterMethods.seekIndex(
-    IsSliced(xs: Rep[CursorIter[s]] @unchecked, im @ IterMarking(All, mA: SliceMarking[a])), keyValues, op) =>
-      Sliced(xs.seekIndex(keyValues, op), im.asMark[Iter[a]])
+    case CursorIterMethods.fromKeyWhile(
+    IsSliced(xs: Rep[CursorIter[s]] @unchecked, im @ IterMarking(All, mA: SliceMarking[a])), keyValues, op, _p) =>
+      val p = _p.asRep[a => Boolean]
+      val sp = sliceIn(p, mA).asRep[s => Boolean]
+      Sliced(xs.fromKeyWhile(keyValues, op, sp), im.asMark[Iter[a]])
 
     case IterMethods.map(
     IsSliced(_xs, IterMarking(All, mA: SliceMarking[a])),

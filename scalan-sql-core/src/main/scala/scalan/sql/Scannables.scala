@@ -69,12 +69,11 @@ trait Scannables extends ScalanDsl {
         }
       }
 
-      val boundedIter0 = if (keyValues.nonEmpty) {
+      val boundedIter = if (keyValues.nonEmpty) {
         val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
-        sourceIter().seekIndex(repKeyValues, startOp)
+        sourceIter().fromKeyWhile(repKeyValues, startOp, test)
       } else
-        sourceIter()
-      val boundedIter = boundedIter0.takeWhile(test)
+        sourceIter().takeWhile(test)
       // if bounds.isEmpty this is the same as fullScan()
       IterBasedRelation(boundedIter)
     }
