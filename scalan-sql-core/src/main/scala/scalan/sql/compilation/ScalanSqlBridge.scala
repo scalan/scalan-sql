@@ -442,19 +442,12 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
               val (clausesInTable, clausesInIndex) = filterClauses.partition(usesAttributesOutsideIndex)
               val plan0 = planFromBounds(eIndexRow)
               val plan1 = filterByClauses(plan0, clausesInIndex)
-              val f = fun[indexRow, Long] { x =>
+              val f = fun[indexRow, Rowid] { x =>
                 // TODO handle WITHOUT ROWID case (more than 1 column here)
                 // needs support on C++ side as well
                 val List(rowidFieldNameInIndexRow) = realKeyColumnNames
                 val rowid = x.asRep[Struct].getUntyped(rowidFieldNameInIndexRow)
-                (rep_getElem(rowid): TypeDesc) match {
-                  case IntElement =>
-                    rowid.asRep[Int].toLong
-                  case LongElement =>
-                    rowid.asRep[Long]
-                  case elem =>
-                    !!!(s"rowid in index ${index.name} on table ${index.tableName} found under name ${rowidFieldNameInIndexRow}, but its type is $elem instead of INTEGER or BIGINT")
-                }
+                castToRowid(rowid)
               }
               val tableByRowids = tableScannable.byRowids(plan1.node, f)
               val plan2 = plan1.copy(node = tableByRowids)

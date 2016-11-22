@@ -103,7 +103,7 @@ trait Iters extends ScalanDsl {
   }
 
   abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
-    def byRowids[B](iter: RIter[B], f: Rep[B => Long]): RIter[Row] = delayInvoke
+    def byRowids[B](iter: RIter[B], f: Rep[B => Rowid]): RIter[Row] = delayInvoke
   }
 
   abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]

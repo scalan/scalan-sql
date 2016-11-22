@@ -412,12 +412,12 @@ trait ItersExp extends ScalanExp with ItersDsl {
 
   object TableIterMethods {
     object byRowids {
-      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Long]) forSome {type Row; type B}] = d match {
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Rowid]) forSome {type Row; type B}] = d match {
         case MethodCall(receiver, method, Seq(iter, f, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "byRowids" =>
-          Some((receiver, iter, f)).asInstanceOf[Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Long]) forSome {type Row; type B}]]
+          Some((receiver, iter, f)).asInstanceOf[Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Rowid]) forSome {type Row; type B}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Long]) forSome {type Row; type B}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], RIter[B], Rep[B => Rowid]) forSome {type Row; type B}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }

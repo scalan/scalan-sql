@@ -297,12 +297,12 @@ trait ScannablesExp extends ScalanExp with ScannablesDsl {
     }
 
     object byRowids {
-      def unapply(d: Def[_]): Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Long]) forSome {type Row; type B}] = d match {
+      def unapply(d: Def[_]): Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Rowid]) forSome {type Row; type B}] = d match {
         case MethodCall(receiver, method, Seq(relation, f, _*), _) if receiver.elem.isInstanceOf[TableScannableElem[_]] && method.getName == "byRowids" =>
-          Some((receiver, relation, f)).asInstanceOf[Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Long]) forSome {type Row; type B}]]
+          Some((receiver, relation, f)).asInstanceOf[Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Rowid]) forSome {type Row; type B}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Long]) forSome {type Row; type B}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[TableScannable[Row]], RRelation[B], Rep[B => Rowid]) forSome {type Row; type B}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }

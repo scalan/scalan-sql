@@ -21,7 +21,7 @@ trait Scannables extends ScalanDsl {
   abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
     override def sourceIter() = TableIter(table, scanId, direction, fakeDep, kernelInput)
 
-    def byRowids[B](relation: RRelation[B], f: Rep[B => Long]): RRelation[Row] = {
+    def byRowids[B](relation: RRelation[B], f: Rep[B => Rowid]): RRelation[Row] = {
       val iter = sourceIter().byRowids(relation.iter, f)
       iterBasedRelation(iter)
     }

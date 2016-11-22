@@ -203,12 +203,33 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
         })
     }
   }
+
+  type Rowid
+  // if overridden, castToRowid must be as well!
+  protected def _initRowidElem(): Elem[_]
+  lazy implicit val RowidElement = _initRowidElem().asElem[Rowid]
+  final def castToRowid(x: Rep[_]): Rep[Rowid] =
+    (if (rep_getElem(x) == RowidElement)
+      x
+    else {
+      val y = _castToRowid(x)
+      assert(rep_getElem(y) == RowidElement)
+      y
+    }).asRep[Rowid]
+  protected def _castToRowid(x: Rep[_]): Rep[_]
 }
 
 trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with KernelInputsDslStd with ItersDslStd with RelationsDslStd with ScalanSql {
   override def pack[A](x: A): String = x.toString
 }
 trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsDslExp with ItersDslExp with RelationsDslExp with ScalanSql with SqlSlicing {
+  override protected def _initRowidElem(): Elem[_] = LongElement
+  override def _castToRowid(x: Rep[_]): Rep[_] = x.elem match {
+    case IntElement =>
+      x.asRep[Int].toLong
+    case elem =>
+      !!!(s"${x.toStringWithDefinition} should be a rowid, but has unexpected type")
+  }
 
   // this override is to avoid HOAS-style invocation of lambdas stored in Lambda.f
   // otherwise, it stops us from recalculating plans when rewriting functions
