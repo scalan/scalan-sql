@@ -172,6 +172,10 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
       testQuery("select * from nation join region on n_regionkey = r_regionkey")
     }
   }
+
+  it("select from table without using any columns") {
+    testQuery("select 1 from nation")
+  }
 }
 
 class RelationSqlBridgeTests extends AbstractSqlBridgeTests {

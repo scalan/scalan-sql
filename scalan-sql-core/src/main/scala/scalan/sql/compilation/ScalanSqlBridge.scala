@@ -42,17 +42,18 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     val parsedSql = parser.parseSelect(query, turnLiteralsIntoParameters).operator
     val resolved = resolver.resolveOperator(parsedSql)
 
-    val scanElems = allUsedAttributes(resolved).toSeq.groupBy(tableAttr => Scan(tableAttr.table.name, tableAttr.tableId)).map {
-      case (scan, attrs) =>
-        val attrsInOrder = attrs.distinct.sortBy(_.index)
-        val fields = attrsInOrder.map(a => (a.name, sqlTypeToElem(a.sqlType)))
-        (scan, structElement(fields))
+    // Could be collected in Scan during resolution, but not worth making the resolver more complex
+    val usedAttributes = allUsedAttributes(resolved).foldLeft(
+      Map.empty[Scan, Set[ResolvedTableAttribute]].withDefaultValue(Set.empty)) {
+      (acc, attr) =>
+        val scan = Scan(attr.table.name, attr.tableId)
+        acc.updated(scan, acc(scan) + attr)
     }
 
     val eInput = kernelInputElement
 
     val resultRelationFun = inferredFun(eInput) { x =>
-      val inputs = ExprInputs(x, scanElems, currentScopeName -> x)
+      val inputs = ExprInputs(x, usedAttributes, currentScopeName -> x)
       val finalPlan = bestPlan(resolved, inputs)
       val finalNode: Exp[Relation[_]] = finalPlan.node
       finalNode
@@ -80,29 +81,50 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   case class Plan[A](node: Exp[Relation[A]], constraints: ConstraintSet, ordering: SqlOrdering) {
     val eRow = node.elem.eRow
-    // TODO Fix cost calculation
-    // for now just assume plan which has fewest scans (and most searches) is the best
+    // TODO Improve cost calculation
     lazy val cost = {
       val graph = new PGraph(node)
+      val FULL_SCAN_COST = 100.0
       val costs = graph.scheduleAll.iterator.map {
         te => te.rhs match {
           case ScannableMethods.fullScan(_) =>
-            1000.0
+            // sequential scan, relatively cheap
+            FULL_SCAN_COST
           case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
-            // TODO check how precise bounds are
+            // one or zero seeks + partial scan
             val index = is.index.asValue
-            if (index.isPrimaryKey || is.isCovering)
-              1.0
-            else if (index.isUnique)
-              2.0
-            else
-              5.0
+            val proportion = bounds.fixedValues.length.toDouble / index.columns.length.toDouble
+            // we want 1.0 if proportion is 1, FULL_SCAN_COST if proportion is 0
+            val cost0 = math.pow(10.0, math.log10(FULL_SCAN_COST) * (1 - proportion))
+            val hasLowerBound = bounds.lowerBound.isDefined
+            val hasUpperBound = bounds.upperBound.isDefined
+            val mult1 =
+              if (hasLowerBound && hasUpperBound)
+                0.25
+              else if (hasLowerBound || hasUpperBound)
+                0.5
+              else
+                1.0
+            val mult2 =
+              if (isIntegerPkIndex(index, is.table.asValue))
+                0.05
+              else if (index.isUnique)
+                0.25
+              else
+                1.0
+            cost0 * mult1 * mult2
+          case TableScannableMethods.byRowids(_, _, _) =>
+            // lots of seeks
+            500.0
           case RelationMethods.sort(_, _) | RelationMethods.sortBy(_, _) =>
-            10000.0
+            2000.0
           case RelationMethods.partialSort(_, _, _) =>
-            5000.0
+            1000.0
           case RelationMethods.partialMapReduce(_, _, _, _, _) =>
             50.0
+          case RelationMethods.filter(_, _) | RelationMethods.map(_, _) =>
+            // pipelined, no extra seeks
+            20.0
           case MethodCall(r, m, _, _) if
             r.elem.isInstanceOf[ScannableElem[_, _]] ||
               r.elem.isInstanceOf[RelationElem[_, _]] ||
@@ -124,7 +146,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
   def generateOperator(op: Operator, inputs: ExprInputs): Plans[_] = ((op match {
     case s: Scan =>
-      generateScan(inputs, s)
+      generateScan(s, None, inputs)
     case join: Join =>
       generateJoin(join, None, inputs)
     case Aggregate(p, groupedBy, aggregates) =>
@@ -138,6 +160,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     case Filter(p, predicate) =>
       val inputs1 = inputs.addConstraints(predicate)
       p match {
+        case scan: Scan =>
+          generateScan(scan, Some(predicate), inputs1)
         case join: Join =>
           generateJoin(join, Some(predicate), inputs1)
         case _ =>
@@ -213,136 +237,230 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     findInput(resolver.currScope)
   }
 
-  def generateScan(inputs: ExprInputs, scan: Scan): Plans[_] = {
+  def forceResolvedTableAttributeByName(table: Table, tableId: Int, columnName: String) =
+    resolver.resolvedTableAttributeByName(table, tableId, columnName).getOrElse {
+      throw new SqlException(s"Column $columnName not found in table ${table.name}")
+    }
+
+  def generateScan(scan: Scan, filter: Option[Expression], inputs: ExprInputs): Plans[_] = {
     val currentLambdaArg = this.currentLambdaArg(inputs)
     val fakeDep = extraDeps(currentLambdaArg)
 
     val tableName = scan.tableName
     val table = resolver.table(tableName)
-    inputs.scanElems(scan) match {
-      case eRow: Elem[a] =>
-        val scanId = scan.id
+    val allIndices = resolver.indices(tableName)
+    val scanId = scan.id
 
-        val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
+    def attributesToElem(attributes: Seq[ResolvedTableAttribute]) = {
+      val fieldElems = attributes.map(attr => (attr.name, sqlTypeToElem(attr.sqlType)))
+      structElement(fieldElems)
+    }
 
-        val allIndices = resolver.indices(scan.tableName)
+    // Do not treat case of empty usedAttributes separately for now
+    val usedAttributes = inputs.usedAttributes(scan).toSeq.sortBy(_.index)
+    val eUsedAttributes = attributesToElem(usedAttributes)
 
-        // TODO connect to inputs (take DB as argument?)
-        val indexPlans = allIndices.flatMap { index =>
-          val columns = index.columns
-          val columnNames = columns.map(_.name)
+    val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
 
-          def boundsLoop(columnNames: List[String]): (SearchBounds, ConstraintSet) = columnNames match {
-            case Nil =>
+    val filterClauses = filter.fold(Seq.empty[Expression])(conjunctiveClauses)
+    def filterByClauses[A](plan: Plan[A], clauses: Seq[Expression]) = {
+      if (clauses.isEmpty)
+        plan
+      else {
+        val pred1 = conjunction(clauses)
+        generateFilter(plan, scan, pred1, inputs)
+      }
+    }
+
+    val tableScannable =
+      TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eUsedAttributes)
+    val tableRelation = tableScannable.fullScan()
+    val tableScanUnfilteredPlan = Plan(tableRelation, ConstraintSet.empty, tableScanOrdering(table, scanId))
+    val tablePlan = filterByClauses(tableScanUnfilteredPlan, filterClauses)
+
+    // if table has rowid (even implicit), it's the real key of b-tree
+    val realKeyColumnNames =
+      if (table.withoutRowId)
+        table.primaryKey
+      else
+        scalan.rowidColumn(table).toList
+
+    val indexPlans = allIndices.flatMap { index =>
+      val columns = {
+        val explicitColumns = index.columns
+        val explicitColumnNames = explicitColumns.map(_.name)
+        val extraColumnsNames =
+          if (isIntegerPkIndex(index, table)) {
+            // all columns except for rowid
+            table.columns.map(_.name).diff(explicitColumnNames)
+          } else {
+            // realKeyColumnNames is always small (usually 1 element), so converting explicitColumnNames to set isn't useful
+            realKeyColumnNames.filterNot(explicitColumnNames.contains)
+          }
+        // since extra columns are unique given the explicit columns, they can be considered Ascending or Descending
+        val extraColumns = extraColumnsNames.map(IndexedColumn(_, None, Ascending))
+        explicitColumns ::: extraColumns
+      }
+      val columnNames = columns.map(_.name)
+
+      def boundsLoop(columnNames: List[String]): (SearchBounds, ConstraintSet) = columnNames match {
+        case Nil =>
+          (SearchBounds.empty, ConstraintSet.empty)
+        case name :: tail =>
+          allConstraints.get(name) match {
+            case None =>
               (SearchBounds.empty, ConstraintSet.empty)
-            case name :: tail =>
-              allConstraints.get(name) match {
-                case None =>
-                  (SearchBounds.empty, ConstraintSet.empty)
-                case Some(constraints) =>
-                  def constraintsInScope(op: ComparisonOp) = {
-                    val allConstraints = constraints(op)
-                    allConstraints.flatMap { value =>
-                      Try {
-                        (value, generateExpr(value, inputs))
-                      }.toOption
-                    }
-                  }
+            case Some(constraints) =>
+              def constraintsInScope(op: ComparisonOp) = {
+                constraints(op).flatMap { value =>
+                  Try {
+                    (value, generateExpr(value, inputs))
+                  }.toOption
+                }
+              }
 
-                  val attr = ResolvedTableAttribute(table, scanId, name)
-                  val eqConstraints = constraintsInScope(Eq)
-                  if (eqConstraints.nonEmpty) {
-                    // TODO as above, this is safe, but we should check that all values in fixed constraints are equal and that they satisfy other bounds
-                    val (fixedValue, fixedValueExp) = eqConstraints.head
-                    val newConstraint = BinOpExpr(Eq, attr, fixedValue)
-                    val (foundBounds, foundConstraints) = boundsLoop(tail)
+              val attr = forceResolvedTableAttributeByName(table, scanId, name)
+              val eqConstraints = constraintsInScope(Eq)
+              if (eqConstraints.nonEmpty) {
+                // TODO as above, this is safe, but we should check that all values in fixed constraintsFromBounds are equal and that they satisfy other bounds
+                val (fixedValue, fixedValueExp) = eqConstraints.head
+                val newConstraint = BinOpExpr(Eq, attr, fixedValue)
+                val (foundBounds, foundConstraints) = boundsLoop(tail)
 
-                    (foundBounds.addFixedValue(fixedValueExp), foundConstraints.addConstraints(newConstraint))
-                  } else {
-                    def bound(isLower: Boolean): (Option[Bound], ConstraintSet) = {
-                      def bound1(isInclusive: Boolean) = {
-                        val op = (isLower, isInclusive) match {
-                          case (true, true) => GreaterEq
-                          case (true, false) => Greater
-                          case (false, true) => LessEq
-                          case (false, false) => Less
-                        }
-
-                        val opConstraints = constraintsInScope(op)
-                        if (opConstraints.nonEmpty) {
-                          val newConstraints = opConstraints.map {
-                            case (sqlExpr, _) => BinOpExpr(op, attr, sqlExpr)
-                          }
-                          val boundExp = opConstraints.map(_._2).reduce {
-                            (p1, p2) =>
-                              ordOp(p1, p2) {
-                                (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
-                              }
-                          }
-                          Some((Bound(boundExp, isInclusive), newConstraints))
-                        } else
-                          None
-                      }
-
-                      val inclusiveBound = bound1(true)
-                      val exclusiveBound = bound1(false)
-                      // TODO This is safe, but we can get a better bound if
-                      // both are defined, using staged IF and comparison
-                      exclusiveBound.orElse(inclusiveBound) match {
-                        case Some((bound, sqlConstraints)) =>
-                          val constraintSet = sqlConstraints.foldLeft(ConstraintSet.empty)(_.addConstraints(_))
-                          (Some(bound), constraintSet)
-                        case None =>
-                          (None, ConstraintSet.empty)
-                      }
+                (foundBounds.addFixedValue(fixedValueExp), foundConstraints.addConstraints(newConstraint))
+              } else {
+                def bound(isLower: Boolean): (Option[Bound], ConstraintSet) = {
+                  def bound1(isInclusive: Boolean) = {
+                    val op = (isLower, isInclusive) match {
+                      case (true, true) => GreaterEq
+                      case (true, false) => Greater
+                      case (false, true) => LessEq
+                      case (false, false) => Less
                     }
 
-                    val lowerBoundWithConstraints = bound(true)
-                    val upperBoundWithConstraints = bound(false)
-
-                    val lowerBound = lowerBoundWithConstraints._1
-                    val upperBound = upperBoundWithConstraints._1
-                    val allConstraints = lowerBoundWithConstraints._2.union(upperBoundWithConstraints._2)
-                    (SearchBounds.range(lowerBound, upperBound), allConstraints)
+                    val opConstraints = constraintsInScope(op)
+                    if (opConstraints.nonEmpty) {
+                      val newConstraints = opConstraints.map {
+                        case (sqlExpr, _) => BinOpExpr(op, attr, sqlExpr)
+                      }
+                      val boundExp = opConstraints.map(_._2).reduce {
+                        (p1, p2) =>
+                          ordOp(p1, p2) {
+                            (ord, elem) => if (isLower) OrderingMax(ord)(elem) else OrderingMin(ord)(elem)
+                          }
+                      }
+                      Some((Bound(boundExp, isInclusive), newConstraints))
+                    } else
+                      None
                   }
+
+                  val inclusiveBound = bound1(true)
+                  val exclusiveBound = bound1(false)
+                  // TODO This is safe, but we can get a better bound if
+                  // both are defined, using staged IF and comparison
+                  exclusiveBound.orElse(inclusiveBound) match {
+                    case Some((bound, sqlConstraints)) =>
+                      val constraintSet = sqlConstraints.foldLeft(ConstraintSet.empty)(_.addConstraints(_))
+                      (Some(bound), constraintSet)
+                    case None =>
+                      (None, ConstraintSet.empty)
+                  }
+                }
+
+                val lowerBoundWithConstraints = bound(true)
+                val upperBoundWithConstraints = bound(false)
+
+                val lowerBound = lowerBoundWithConstraints._1
+                val upperBound = upperBoundWithConstraints._1
+                val allConstraints = lowerBoundWithConstraints._2.union(upperBoundWithConstraints._2)
+                (SearchBounds.range(lowerBound, upperBound), allConstraints)
               }
           }
+      }
 
-          def hasCommonPrefix[A, B](list1: List[A], list2: List[B])(implicit ev: A =:= B) =
-            list1.nonEmpty && list2.nonEmpty && list1.head == list2.head
+      def hasCommonPrefix[A, B](list1: List[A], list2: List[B])(implicit ev: A =:= B) =
+        list1.nonEmpty && list2.nonEmpty && list1.head == list2.head
 
-          val goodForOrder: Option[SortDirection] = {
-            if (orderColumns.nonEmpty) {
-              List(Ascending, Descending).find { direction =>
-                val indexColumnsForDirection =
-                  columns.map(c => (c.name, c.direction.inverseIfDescending(direction), NullsOrderingUnspecified: NullsOrdering))
-                hasCommonPrefix(indexColumnsForDirection, orderColumns)
-              }
-            } else None
+      val goodForOrder: Option[SortDirection] = {
+        if (orderColumns.nonEmpty) {
+          List(Ascending, Descending).find { direction =>
+            val indexColumnsForDirection =
+              columns.map(c => (c.name, c.direction.inverseIfDescending(direction), NullsOrderingUnspecified: NullsOrdering))
+            hasCommonPrefix(indexColumnsForDirection, orderColumns)
           }
-          val goodForGroup = groupColumns.nonEmpty && hasCommonPrefix(columnNames, groupColumns)
+        } else None
+      }
+      val goodForGroup = groupColumns.nonEmpty && hasCommonPrefix(columnNames, groupColumns)
 
-          val (bounds, constraints) = boundsLoop(columnNames)
-          if (!bounds.isEmpty || goodForOrder.isDefined || goodForGroup) {
-            val direction = goodForOrder.getOrElse(Ascending)
-            val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
-            val relation = scannable.search(bounds)
-            val indexScanOrdering =
-              for (IndexedColumn(name, _, colDirection) <- index.columns)
-                yield SortSpec(ResolvedTableAttribute(table, scanId, name), colDirection.inverseIfDescending(direction), NullsOrderingUnspecified)
-            val plan = Plan(relation, constraints, indexScanOrdering)
-            Some(plan)
-          } else
-            None
+      val (bounds, constraintsFromBounds) = boundsLoop(columnNames)
+      if (!bounds.isEmpty || goodForOrder.isDefined || goodForGroup) {
+        val direction = goodForOrder.getOrElse(Ascending)
+        val indexScanOrdering =
+          for (IndexedColumn(name, _, colDirection) <- columns)
+            yield {
+              val attr = forceResolvedTableAttributeByName(table, scanId, name)
+              val attrDirection = colDirection.inverseIfDescending(direction)
+              SortSpec(attr, attrDirection, NullsOrderingUnspecified)
+            }
+
+        val (usedAttributesInIndex, usedAttributesOutsideIndex) =
+          usedAttributes.partition(attr => columnNames.contains(attr.name))
+
+        def planFromBounds[A](eRow: Elem[A]) = {
+          val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
+          val searchRelation = scannable.search(bounds)
+          Plan(searchRelation, constraintsFromBounds, indexScanOrdering)
         }
 
-        val relation =
-          TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eRow).fullScan()
+        val plan = if (usedAttributesOutsideIndex.isEmpty) {
+          // the index is covering, there is no need to read from the table
+          val plan0 = planFromBounds(eUsedAttributes)
+          filterByClauses(plan0, filterClauses)
+        } else {
+          // if we need to read from the table, add all key columns first
+          val missingKeyColumns =
+            realKeyColumnNames.filterNot(usedAttributesInIndex.map(_.name).contains)
+          // TODO is this correct in all cases? In particular, if table contains columns named `rowid`, `_rowid_`?
+          val missingAttributes =
+            missingKeyColumns.map(forceResolvedTableAttributeByName(table, scanId, _))
+          val allAttributesToReadFromIndex = usedAttributesInIndex ++ missingAttributes
+          attributesToElem(allAttributesToReadFromIndex) match {
+            case eIndexRow: Elem[indexRow] =>
+              implicit val _: Elem[indexRow] = eIndexRow
+              val indexScannable =
+                IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eIndexRow)
+              val indexRelation0 = indexScannable.search(bounds)
 
-        val tablePlan = Plan(relation, ConstraintSet.empty, tableScanOrdering(table, scanId))
+              def usesAttributesOutsideIndex(x: Any): Boolean = x match {
+                case attr: ResolvedTableAttribute => usedAttributesOutsideIndex.contains(attr)
+                case p: Product => p.productIterator.exists(usesAttributesOutsideIndex)
+                case _ => false
+              }
 
-        tablePlan +: indexPlans
+              // separate clauses which use only the columns in the index from those which don't,
+              // to minimize seeks
+              val (clausesInTable, clausesInIndex) = filterClauses.partition(usesAttributesOutsideIndex)
+              val plan0 = planFromBounds(eIndexRow)
+              val plan1 = filterByClauses(plan0, clausesInIndex)
+              val f = fun[indexRow, Rowid] { x =>
+                // TODO handle WITHOUT ROWID case (more than 1 column here)
+                // needs support on C++ side as well
+                val List(rowidFieldNameInIndexRow) = realKeyColumnNames
+                val rowid = x.asRep[Struct].getUntyped(rowidFieldNameInIndexRow)
+                castToRowid(rowid)
+              }
+              val tableByRowids = tableScannable.byRowids(plan1.node, f)
+              val plan2 = plan1.copy(node = tableByRowids)
+              filterByClauses(plan2, clausesInTable)
+          }
+        }
+
+        Some(plan)
+      } else
+        None
     }
+
+    tablePlan +: indexPlans
   }
 
   // TODO this depends on the database, make abstract
@@ -352,7 +470,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       case None =>
         Nil
       case Some(name) =>
-        List(SortSpec(ResolvedTableAttribute(table, scanId, name), Ascending, NullsOrderingUnspecified))
+        val attr = forceResolvedTableAttributeByName(table, scanId, name)
+        List(SortSpec(attr, Ascending, NullsOrderingUnspecified))
     }
   }
 
@@ -720,7 +839,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     sqlTypeToElem(resolver.getExprType(expr))
   }
 
-  case class ExprInputs(kernelInput: Exp[KernelInput], scanElems: Map[Scan, StructElem[_]], scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
+  case class ExprInputs(kernelInput: Exp[KernelInput], usedAttributes: Map[Scan, Set[ResolvedTableAttribute]], scopes: Map[String, Exp[_]], columnUseInfo: ColumnUseInfo) {
     def addConstraints(predicate: Expression) =
       copy(columnUseInfo = columnUseInfo.addConstraints(predicate))
 
@@ -790,8 +909,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   object ExprInputs {
-    def apply(kernelInput: Exp[KernelInput], scanElems: Map[Scan, StructElem[_]], scopes: (String, Exp[_])*): ExprInputs =
-      new ExprInputs(kernelInput, scanElems, scopes.toMap, ColumnUseInfo())
+    def apply(kernelInput: Exp[KernelInput], usedAttributes: Map[Scan, Set[ResolvedTableAttribute]], scopes: (String, Exp[_])*): ExprInputs =
+      new ExprInputs(kernelInput, usedAttributes, scopes.toMap, ColumnUseInfo())
   }
 
 def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {

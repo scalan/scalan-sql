@@ -20,11 +20,14 @@ trait Scannables extends ScalanDsl {
 
   abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
     override def sourceIter() = TableIter(table, scanId, direction, fakeDep, kernelInput)
+
+    def byRowids[B](relation: RRelation[B], f: Rep[B => Rowid]): RRelation[Row] = {
+      val iter = sourceIter().byRowids(relation.iter, f)
+      iterBasedRelation(iter)
+    }
   }
 
   abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    def isCovering: Boolean = Scannables.this.isCovering(table.asValue, index.asValue, eRow)
-
     override def sourceIter() = IndexIter(table, index, scanId, direction, fakeDep, kernelInput)
 
     // FIXME assumes all columns in index are ASC
@@ -66,12 +69,11 @@ trait Scannables extends ScalanDsl {
         }
       }
 
-      val boundedIter0 = if (keyValues.nonEmpty) {
+      val boundedIter = if (keyValues.nonEmpty) {
         val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
-        sourceIter().seekIndex(repKeyValues, startOp)
+        sourceIter().fromKeyWhile(repKeyValues, startOp, test)
       } else
-        sourceIter()
-      val boundedIter = boundedIter0.takeWhile(test)
+        sourceIter().takeWhile(test)
       // if bounds.isEmpty this is the same as fullScan()
       IterBasedRelation(boundedIter)
     }
@@ -101,7 +103,7 @@ trait ScannablesDslExp extends impl.ScannablesExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case elem: ScannableElem[_, _] =>
       m.getName match {
-        case "fullScan" | "search" =>
+        case "fullScan" | "search" | "byRowids" =>
           relationElement(elem.eRow)
         case _ => super.getResultElem(receiver, m, args)
       }
