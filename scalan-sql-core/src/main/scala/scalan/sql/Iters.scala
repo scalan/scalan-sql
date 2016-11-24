@@ -21,6 +21,10 @@ trait Iters extends ScalanDsl {
 
     def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B] = delayInvoke
 
+    def flatMap0or1[B](f: Rep[Row => Opt[B]]): RIter[B] = delayInvoke
+
+    def flatMap0or1U[B](f: Rep[((B, Row)) => Boolean]): RIter[B] = delayInvoke
+
     def filter(f: Rep[Row => Boolean]): RIter[Row] = delayInvoke
 
     def takeWhile(f: Rep[Row => Boolean]): RIter[Row] = delayInvoke
@@ -87,7 +91,15 @@ trait Iters extends ScalanDsl {
     def materialize(f: Rep[Row => Row]): RIter[Row] = delayInvoke
   }
   trait IterCompanion {
-    def empty[Row: Elem]: Rep[Iter[Row]] = externalMethod("IterCompanion", "empty")
+    def empty[Row: Elem]: Rep[EmptyIter[Row]] =
+      EmptyIter()
+    def single[Row](value: Rep[Row]): Rep[SingletonIter[Row]] =
+      SingletonIter(value)(rep_getElem(value))
+    def singleIf[Row](condition: Rep[Boolean], value: Rep[Row]): Rep[ConditionalIter[Row]] = {
+      val elem = rep_getElem(value)
+      val singleton = SingletonIter(value)(elem)
+      ConditionalIter(condition, singleton)(elem)
+    }
   }
 
   trait CursorIter[Row] extends Iter[Row] {
@@ -99,18 +111,165 @@ trait Iters extends ScalanDsl {
     def fakeDep: Rep[Unit]
     def kernelInput: Rep[KernelInput]
 
-    def fromKeyWhile(keyValues: Rep[Array[Any]], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean]): Rep[CursorIter[Row]] = delayInvoke
+    def fromKeyWhile(keyValues: Rep[Array[Any]], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean]): RIter[Row] = delayInvoke
+
+    // if there are cases where value is guaranteed to exist, add argument for this
+    // I don't think there are any at the moment
+    def uniqueByKey(keyValues: Rep[Array[Any]]): RIter[Row] = {
+      // note the call on self to prevent DelayInvokeException passing through
+      val optValue = self.asRep[CursorIter[Row]].uniqueValueByKey(keyValues)
+      Iter.singleIf(optValue._1, optValue._2)
+    }
+
+    // TODO should advanceIter return Boolean as well, so this can be implemented?
+    /** The first part of the result may not be accessed if the second is false */
+    def uniqueValueByKey(keyValues: Rep[Array[Any]]): ROpt[Row] = delayInvoke
   }
 
   abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
     def byRowids[B](iter: RIter[B], f: Rep[B => Rowid]): RIter[Row] = delayInvoke
+
+    // see comments for CursorIter#uniqueByKey
+    def uniqueByRowid(rowid: Rep[Rowid]): RIter[Row] = {
+      val optValue = self.asRep[TableIter[Row]].uniqueValueByRowid(rowid)
+      Iter.singleIf(optValue._1, optValue._2)
+    }
+
+    // TODO as for uniqueValue above
+    /** The first part of the result may not be accessed if the second is false */
+    def uniqueValueByRowid(rowid: Rep[Rowid]): ROpt[Row] = delayInvoke
   }
 
   abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
+
+  trait AtMostOne[Row] extends Iter[Row] {
+    def eRow: Elem[Row]
+
+    override def takeWhile(f: Rep[Row => Boolean]): RIter[Row] = filter(f)
+
+    // TODO move up to Iter
+    def reduceValue[B](f: Rep[((B, Row)) => B], init: Rep[Thunk[B]]): Rep[B]
+
+    // def reduceValueU[B](f: Rep[((B, Row)) => Unit], init: Rep[Thunk[B]]): Rep[B] = delayInvoke
+
+    override def reduce[B](f: Rep[((B, Row)) => B], init: Rep[Thunk[B]]): Rep[SingletonIter[B]] = {
+      val v = reduceValue(f, init)
+      Iter.single(v)
+    }
+
+    override def partialMapReduce[K, V](prefixComparator: Rep[((Row, Row)) => Boolean],
+                               mapKey: Rep[Row => K],
+                               packKey: Rep[Row => String],
+                               newValue: Rep[Thunk[V]],
+                               reduceValue: Rep[((V, Row)) => V]
+                              ): RIter[Struct] = mapReduce(mapKey, packKey, newValue, reduceValue)
+
+    override def sort(comparator: Rep[((Row, Row)) => Boolean]): RIter[Row] = self
+    override def sortBy(comparator: Rep[((Row, Row)) => Int]): RIter[Row] = self
+
+    override def partialSort(prefixComparator: Rep[((Row, Row)) => Boolean], suffixComparator: Rep[((Row, Row)) => Boolean]): RIter[Row] = self
+  }
+
+  abstract class SingletonIter[Row](val value: Rep[Row])(implicit val eRow: Elem[Row]) extends AtMostOne[Row] {
+    override def map[B](f: Rep[Row => B]): RIter[B] =
+      Iter.single(f(value))
+
+    override def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B] = f(value)
+
+    override def flatMap0or1[B](f: Rep[Row => Opt[B]]): RIter[B] = {
+      val optValue = f(value)
+      Iter.singleIf(optValue._1, optValue._2)
+    }
+
+    override def filter(f: Rep[Row => Boolean]): RIter[Row] =
+      Iter.singleIf(f(value), value)
+
+    override def isEmpty: Rep[Boolean] = false
+
+    override def reduceValue[B](f: Rep[((B, Row)) => B], init: Rep[Thunk[B]]): Rep[B] = {
+      val initialValue = init.force()
+      f((initialValue, value))
+    }
+
+    override def mapReduce[K, V](mapKey: Rep[Row => K],
+                        packKey: Rep[Row => String],
+                        newValue: Rep[Thunk[V]],
+                        reduceValue: Rep[((V, Row)) => V]
+                       ): RIter[Struct] = {
+      val key = mapKey(value)
+      val v = this.reduceValue(reduceValue, newValue)
+      val result = struct(defaultStructTag, KeyFieldName -> key, ValueFieldName -> v)
+      Iter.single(result)
+    }
+
+    // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
+    override def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)] = {
+      val key = thisKey(value)
+      val BtoKeyElem = rep_getElem(otherKey)
+      implicit val eB = BtoKeyElem.eDom
+      implicit val eKey = BtoKeyElem.eRange
+      val f1 = fun { otherKey(_: Rep[B]) === key }
+      val f2 = fun { Pair(value, _: Rep[B]) }
+      other.filter(f1).map(f2)
+    }
+
+    override def toArray: Arr[Row] = SArray.singleton(value)
+  }
+
+  abstract class EmptyIter[Row](implicit val eRow: Elem[Row]) extends AtMostOne[Row] {
+    override def map[B](f: Rep[Row => B]): RIter[B] = {
+      val eB = rep_getElem(f).eRange
+      EmptyIter()(eB)
+    }
+
+    override def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B] = {
+      val eB = rep_getElem(f).eRange.eRow
+      EmptyIter()(eB)
+    }
+
+    override def flatMap0or1[B](f: Rep[Row => Opt[B]]): RIter[B] = {
+      val eB = rep_getElem(f).eRange.eSnd
+      EmptyIter()(eB)
+    }
+
+    override def filter(f: Rep[Row => Boolean]): RIter[Row] = self
+
+    override def isEmpty: Rep[Boolean] = true
+
+    override def reduceValue[B](f: Rep[((B, Row)) => B], init: Rep[Thunk[B]]): Rep[B] =
+      init.force()
+
+    override def mapReduce[K, V](mapKey: Rep[Row => K],
+                                 packKey: Rep[Row => String],
+                                 newValue: Rep[Thunk[V]],
+                                 reduceValue: Rep[((V, Row)) => V]
+                                ): RIter[Struct] = {
+      val eK = rep_getElem(mapKey).eRange
+      val eV = rep_getElem(newValue).eItem
+      val resultElem = structElement(Seq(KeyFieldName -> eK, ValueFieldName -> eV))
+      EmptyIter()(resultElem)
+    }
+
+    // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
+    override def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)] = {
+      val BtoKeyElem = rep_getElem(otherKey)
+      implicit val eB = BtoKeyElem.eDom
+      Iter.empty
+    }
+
+    override def toArray: Arr[Row] = SArray.empty
+  }
+
+  // all methods "implemented" by rewriteDef
+  // TODO check if just using IF THEN ELSE directly works as well
+  /** Equivalent to IF (condition) THEN baseIter ELSE Iter.empty, may be rewritten to it in later stage */
+  abstract class ConditionalIter[Row](val condition: Rep[Boolean], val baseIter: RIter[Row])(implicit val eRow: Elem[Row]) extends Iter[Row]
 }
 
 // TODO add rewrite rules map(IdentityLambda) etc.
 trait ItersDsl extends impl.ItersAbs { self: ScalanSql =>
+  type Opt[A] = (Boolean, A)
+  type ROpt[A] = Rep[Opt[A]]
 
   trait IterFunctor extends Functor[Iter] {
     def tag[T](implicit tT: WeakTypeTag[T]) = weakTypeTag[Iter[T]]
@@ -125,7 +284,10 @@ trait ItersDsl extends impl.ItersAbs { self: ScalanSql =>
   }
   implicit val iterContainer: Functor[Iter] = new IterFunctor {}
 
-  implicit def iterElemExtensions[A](ie: Elem[Iter[A]]) = ie.asInstanceOf[IterElem[A, Iter[A]]]
+  def conditionalIter[Row](condition: Rep[Boolean], baseIter: Rep[Iter[Row]]) =
+    ConditionalIter(condition, baseIter)(rep_getElem(baseIter).eRow)
+
+  implicit def iterElemExtensions[A](ie: Elem[Iter[A]]): IterElem[A, Iter[A]] = ie.asInstanceOf[IterElem[A, Iter[A]]]
 
   def advanceIter[Row](iter: RIter[Row]): Rep[(Row, Iter[Row])] = ???
 
@@ -154,11 +316,10 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
     AdvanceIter(iter, advanceIterCounter)
   }
 
-
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "takeWhile" | "fromKeyWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" =>
+        case "filter" | "takeWhile" | "fromKeyWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" | "uniqueByKey" | "uniqueByRowid" =>
           val eRow = receiver.elem.asInstanceOf[IterElem[_, _]].eRow
           iterElement(eRow)
         case "map" =>
@@ -173,6 +334,14 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           val f = args(0).asInstanceOf[Exp[_]]
           val eIterB = f.elem.asInstanceOf[FuncElem[_, _]].eRange
           eIterB
+        case "flatMap0or1" =>
+          val f = args(0).asInstanceOf[Exp[_]]
+          val eB = f.elem.asInstanceOf[FuncElem[_, _]].eRange.asInstanceOf[PairElem[_, _]].eSnd
+          iterElement(eB)
+        case "flatMap0or1U" =>
+          val f = args(0).asInstanceOf[Exp[_]]
+          val eB = f.elem.asInstanceOf[FuncElem[_, _]].eDom.asInstanceOf[PairElem[_, _]].eFst
+          iterElement(eB)
         case "mapReduce" | "mapReduceU" =>
           val mapKey = args(0).asInstanceOf[Exp[_]]
           val newValue = args(2).asInstanceOf[Exp[_]]
@@ -192,18 +361,61 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           iterElement(pairElement(eA, eB))
         case "onlyElement" | "next" =>
           iterElem.eRow
+        case "uniqueValueByKey" | "uniqueValueByRowid" =>
+          pairElement(BooleanElement, iterElem.eRow)
         case _ => super.getResultElem(receiver, m, args)
       }
     case _ =>
       super.getResultElem(receiver, m, args)
   }
 
-  override def rewriteDef[T](d: Def[T]): Exp[_] = d match {
+  // hacky, but should be equivalent to building the lambda using `fun` as normal
+  def copyLambda[A, B, C](l: Lambda[A, B], v: Rep[C]): Rep[A => C] = {
+    val x = l.x
+    implicit val eA = x.elem
+    implicit val eC = v.elem
+    val fSym = fresh[A => C]
+    val l1 = new Lambda(None, x, v, fSym, l.mayInline)
+    findOrCreateDefinition(l1, fSym)
+  }
+
+  override def rewriteDef[T](d: Def[T]): Exp[_] = (d: @unchecked) match {
+
+    case ExpConditionalIter(Def(Const(b)), iter) =>
+      if (b)
+        iter
+      else
+        Iter.empty(iter.elem.eRow)
+
+    // must be last rule for ExpConditionalIter
+    case ExpConditionalIter(cond, iter @ Def(iterDef)) =>
+      iterDef match {
+        case _: EmptyIter[_] =>
+          iter
+        case ExpConditionalIter(cond1, iter1) =>
+          ExpConditionalIter(cond && cond1, iter1)(iter1.elem.eRow)
+        case _ => super.rewriteDef(d)
+      }
+
+    case IterMethods.isEmpty(Def(ExpConditionalIter(condition, baseIter))) =>
+      !condition || baseIter.isEmpty
+    case IterMethods.toArray(Def(ExpConditionalIter(condition, baseIter))) =>
+      IF (condition) THEN baseIter.toArray ELSE SArray.empty(baseIter.elem.eRow)
+    // has to be handled before other rules for IterMethods.map/flatMap/etc. so they don't call super.rewriteDef
+    case MethodCall(condIter @ Def(ExpConditionalIter(condition, baseIter)), m, args, neverInvoke) =>
+      val methodCall = mkMethodCall(baseIter, m, args, neverInvoke)
+      methodCall match {
+        case baseIter1: RIter[a] @unchecked if baseIter1.elem.isInstanceOf[IterElem[_, _]] =>
+          conditionalIter(condition, baseIter1)
+        case nonIter =>
+          !!!(s"(${baseIter.toStringWithDefinition}).${m.getName} called inside ConditionalIter, got non-iter ${nonIter.toStringWithDefinition}", (condIter +: args.collect { case e: Exp[_] => e }): _*)
+      }
+
     case IterMethods.map(iter, Def(IdentityLambda())) =>
       iter
-    case IterMethods.map(ys @ Def(d2), f: Rep[Function1[a, b]] @unchecked) =>
+    case IterMethods.map(ys @ Def(d2), f: RFunc[a, b] @unchecked) =>
       d2.asDef[Iter[a]] match {
-        case IterMethods.map(xs: Rep[Iter[c]] @unchecked, g) => //TODO if hasSingleUsage(ys)
+        case IterMethods.map(xs: RIter[c] @unchecked, g) => //TODO if hasSingleUsage(ys)
           val g1 = g.asRep[c => a]
           implicit val eB = f.elem.eRange
           implicit val eC = xs.elem.asInstanceOf[IterElem[c,_]].eRow
@@ -212,9 +424,9 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
         case _ => super.rewriteDef(d)
       }
     case IterMethods.filter(iter: RIter[a], Def(ConstantLambda(c))) =>
-      IF (c) THEN iter ELSE Iter.empty(iter.selfType1.eRow)
+      conditionalIter(c, iter)
     case IterMethods.takeWhile(iter: RIter[a], Def(ConstantLambda(c))) =>
-      IF (c) THEN iter ELSE Iter.empty(iter.selfType1.eRow)
+      conditionalIter(c, iter)
     case IterMethods.filter(iter1 @ Def(IterMethods.takeWhile(iter, f)), g) if f == g =>
       iter1
     case IterMethods.takeWhile(iter1 @ Def(IterMethods.filter(iter, f)), g) if f == g =>
@@ -233,6 +445,37 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
         implicit val eA: Elem[a] = iter.elem.eRow
         iter.takeWhile(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
       }
+
+    // must be last rule for flatMap
+    case IterMethods.flatMap(_iter, Def(Lambda(l: Lambda[a, Iter[b]] @unchecked, _, _, y @ Def(d1)))) =>
+      val iter = _iter.asRep[Iter[a]]
+      d1 match {
+        case _: EmptyIter[_] =>
+          y // empty iter of the correct type
+        case ExpSingletonIter(value) =>
+          val f1 = copyLambda(l, value)
+          iter.map(f1)
+        case ExpConditionalIter(condition, Def(ExpSingletonIter(value))) =>
+          val optValue = Pair(condition, value)
+          val f1 = copyLambda(l, optValue)
+          iter.flatMap0or1(f1)
+        case _ => super.rewriteDef(d)
+      }
+
+    case IterMethods.flatMap0or1(_iter, Def(
+    Lambda(l: Lambda[a, Opt[b]] @unchecked, _, _, Def(Tup(Def(Const(b)), v)))
+    )) =>
+      val iter = _iter.asRep[Iter[a]]
+      if (b) {
+        val f1 = copyLambda(l, v)
+        iter.map(f1)
+      } else
+        Iter.empty(v.elem)
+
+    case TableIterMethods.byRowids(iter, Def(ExpSingletonIter(value: Rep[a])), f) =>
+      iter.uniqueByRowid(f.asRep[a => Rowid](value))
+    case TableIterMethods.byRowids(iter, Def(ExpConditionalIter(c, baseIter: RIter[a] @unchecked)), f) =>
+      conditionalIter(c, iter.byRowids(baseIter, f.asRep[a => Rowid]))
 
     case _ => super.rewriteDef(d)
   }

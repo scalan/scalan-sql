@@ -16,8 +16,9 @@ object SqlBoilerplateTool extends BoilerplateTool {
     baseContextTrait = "Scalan",
     seqContextTrait = "ScalanStd",
     stagedContextTrait = "ScalanExp",
-    entityTypeSynonyms = Map()
+    entityTypeSynonyms = Map("ROpt" -> "Opt", "Arr" -> "Array")
   )
 
   override def getConfigs(args: Array[String]) = Seq(sqlConfig)
+
 }

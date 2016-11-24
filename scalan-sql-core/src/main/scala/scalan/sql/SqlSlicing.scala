@@ -38,8 +38,16 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
           Seq[MarkedSym]((xs, mxs), (thisSym.asRep[Iter[A]], mxs)) ++ fs.map(_.marked(mFuncFinal))
       }
 
+      def uniqueLike[A, B](xs: Rep[Iter[A]], key: Rep[B]) =
+        Seq[MarkedSym](xs.marked(outMark.asMark[Iter[A]]), key.marked(key.elem.toMarking))
+
+      def uniqueValueLike[A, B](xs: Rep[Iter[A]], key: Rep[B]) = outMark match {
+        case PairMarking(_, markA: SliceMarking[A] @unchecked) =>
+          Seq[MarkedSym](xs.marked(IterMarking(All, markA)), key.marked(key.elem.toMarking))
+      }
+
       d match {
-        case IterMethods.map(_xs, f: RFunc[a, b]) => outMark match {
+        case IterMethods.map(_xs, f: RFunc[a, b] @unchecked) => outMark match {
           case IterMarking(_, mB_out) =>
             val xs = _xs.asRep[Iter[a]]
             val mOutMark = mB_out.asMark[b]
@@ -47,10 +55,18 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
             Seq((xs, getMark(xs) |/| (All, lm.mDom)))
         }
 
-        case IterMethods.flatMap(_xs, f: RFunc[a, Iter[b]]) => outMark match {
+        case IterMethods.flatMap(_xs, f: RFunc[a, Iter[b]] @unchecked) => outMark match {
           case IterMarking(_, mB_out) =>
             val xs = _xs.asRep[Iter[a]]
             val mOutMark = IterMarking(All, mB_out.asMark[b])
+            val lm = analyzeFunc(f, mOutMark)
+            Seq((xs, getMark(xs) |/| (All, lm.mDom)))
+        }
+
+        case IterMethods.flatMap0or1(_xs, f: RFunc[a, Opt[b]] @unchecked) => outMark match {
+          case IterMarking(_, mB) =>
+            val xs = _xs.asRep[Iter[a]]
+            val mOutMark = PairMarking(BooleanElement.toMarking, mB)
             val lm = analyzeFunc(f, mOutMark)
             Seq((xs, getMark(xs) |/| (All, lm.mDom)))
         }
@@ -84,12 +100,12 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
             implicit val eK = mapKey.elem.eRange
             implicit val eV = newValue.elem.eItem
 
-            val mVal = mKeyVal.get("val").getOrElse(EmptyMarking(eV)).asMark[v]
+            val mVal = mKeyVal.get(ValueFieldName).getOrElse(EmptyMarking(eV)).asMark[v]
             val FuncMarking(PairMarking(mV1, mA1), mV3) = analyzeFunc(reduce, mVal)
             val mVal1 = mVal.join(mV1.asMark[v]).join(mV3.asMark[v])
             val ThunkMarking(mVal2) = analyzeThunk(newValue, mVal1)
 
-            val mKey = mKeyVal.get("key").getOrElse(EmptyMarking(eK)).asMark[k]
+            val mKey = mKeyVal.get(KeyFieldName).getOrElse(EmptyMarking(eK)).asMark[k]
             val FuncMarking(mA2, _) = analyzeFunc(mapKey, mKey)
             val mPack = analyzeFunc(pack, StringElement.toMarking)
             assert(mPack.mDom == mA2)
@@ -108,12 +124,12 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
             implicit val eK = mapKey.elem.eRange
             implicit val eV = newValue.elem.eItem
 
-            val mVal = mKeyVal.get("val").getOrElse(EmptyMarking(eV)).asMark[v]
+            val mVal = mKeyVal.get(ValueFieldName).getOrElse(EmptyMarking(eV)).asMark[v]
             val FuncMarking(PairMarking(mV1, mA1), mV3) = analyzeFunc(reduce, mVal)
             val mVal1 = mVal.join(mV1.asMark[v]).join(mV3.asMark[v])
             val ThunkMarking(mVal2) = analyzeThunk(newValue, mVal1)
 
-            val mKey = mKeyVal.get("key").getOrElse(EmptyMarking(eK)).asMark[k]
+            val mKey = mKeyVal.get(KeyFieldName).getOrElse(EmptyMarking(eK)).asMark[k]
             val FuncMarking(mA2, _) = analyzeFunc(mapKey, mKey)
             val mPack = analyzeFunc(pack, StringElement.toMarking)
 
@@ -177,6 +193,22 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
         // Parameter doesn't really depend on its argument
         case _: Parameter[_] | _: ExtraDeps =>
           Seq.empty
+
+        case AdvanceIter(iter: RIter[a] @unchecked, _) =>
+          val PairMarking(_, iM) = outMark
+          Seq[MarkedSym](iter.asRep[Iter[a]].marked(iM.asMark[Iter[a]]))
+
+        case CursorIterMethods.uniqueByKey(iter, key) =>
+          uniqueLike(iter, key)
+
+        case TableIterMethods.uniqueByRowid(iter, key) =>
+          uniqueLike(iter, key)
+
+        case CursorIterMethods.uniqueValueByKey(iter, key) =>
+          uniqueValueLike(iter, key)
+
+        case TableIterMethods.uniqueValueByRowid(iter, key) =>
+          uniqueValueLike(iter, key)
 
         case _ =>
           super.getInboundMarkings(te, outMark)
@@ -261,6 +293,15 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
       assert(eS == sMapKey.elem.eDom, s"${eS} == ${sMapKey.elem.eDom}")
       //      assert(eS == newValue.elem.eItem, s"${eS} == ${newValue.elem.eItem}")
       xs.mapReduce(sMapKey, sPackKey, newValue, sReduce)
+
+    case IterMethods.flatMap(IsSliced(xs: RIter[s] @unchecked, IterMarking(All, sm: SliceMarking[a])), _f: RFunc[_, Iter[b]] @unchecked) =>
+      // TODO by analogy with map
+      val f = _f.asRep[a => Iter[b]]
+      ???("TODO: slicing for flatMap")
+
+    case IterMethods.flatMap0or1(IsSliced(xs: RIter[s] @unchecked, IterMarking(All, sm: SliceMarking[a])), _f: RFunc[_, Opt[b]] @unchecked) =>
+      val f = _f.asRep[a => Opt[b]]
+      ???("TODO: slicing for flatMap0or1")
 
     case IterMethods.join(
     IsSliced(ls: RIter[s] @unchecked, IterMarking(All, mA: SliceMarking[a])),
@@ -355,8 +396,24 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
     case Clone(IsSliced(p, m)) =>
       Sliced(clone(p), m)
 
+
     case Parameter(index, IsSliced(p, m), value) =>
       Parameter(index, p, value)(d.selfType)
+
+    case AdvanceIter(IsSliced(iter: RIter[a] @unchecked, m), counter) =>
+      Sliced(AdvanceIter(iter.asRep[Iter[a]], counter), m)
+
+    case CursorIterMethods.uniqueByKey(IsSliced(iter: Rep[CursorIter[a]] @unchecked, m), key) =>
+      Sliced(iter.uniqueByKey(key), m)
+
+    case TableIterMethods.uniqueByRowid(IsSliced(iter: Rep[TableIter[a]] @unchecked, m), key) =>
+      Sliced(iter.uniqueByRowid(key), m)
+
+    case CursorIterMethods.uniqueValueByKey(IsSliced(iter: Rep[CursorIter[a]] @unchecked, m), key) =>
+      Sliced(iter.uniqueValueByKey(key), m)
+
+    case TableIterMethods.uniqueValueByRowid(IsSliced(iter: Rep[TableIter[a]] @unchecked, m), key) =>
+      Sliced(iter.uniqueValueByRowid(key), m)
 
     case _ => super.rewriteDef(d)
   }

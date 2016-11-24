@@ -33,49 +33,59 @@ trait Scannables extends ScalanDsl {
     // FIXME assumes all columns in index are ASC
     def search(bounds: SearchBounds): RRelation[Row] = {
       val index0 = index.asValue
-      val direction0 = direction.asValue
-
-      def inverseIfDescending(op: ComparisonOp) = op.inverseIfDescending(direction0)
-
-      val (startBound, endBound) = direction0 match {
-        case Ascending => (bounds.lowerBound, bounds.upperBound)
-        case Descending => (bounds.upperBound, bounds.lowerBound)
-      }
       val fixedValues = bounds.fixedValues
-      val (keyValues, startOpIfAscending) = startBound match {
-        case None =>
-          (fixedValues, GreaterEq)
-        case Some(Bound(value, isInclusive)) =>
-          (fixedValues :+ value, if (isInclusive) GreaterEq else Greater)
-      }
-      val startOp = inverseIfDescending(startOpIfAscending)
-      val test = fun[Row, Boolean] { _x =>
-        val x = _x.asRep[Struct]
 
-        val firstCondition = endBound match {
-          case None => toRep(true)
+      def keyArray(values: List[Rep[_]]) =
+        SArray.fromSyms(values.asInstanceOf[List[Rep[Any]]])(AnyElement)
+
+      val iter = if (fixedValues.length == index0.columns.length && index0.isUnique) {
+        val repFixedValues = keyArray(fixedValues)
+        sourceIter().uniqueByKey(repFixedValues)
+      } else {
+        val direction0 = direction.asValue
+
+        def inverseIfDescending(op: ComparisonOp) = op.inverseIfDescending(direction0)
+
+        val (startBound, endBound) = direction0 match {
+          case Ascending => (bounds.lowerBound, bounds.upperBound)
+          case Descending => (bounds.upperBound, bounds.lowerBound)
+        }
+
+        val (keyValues, startOpIfAscending) = startBound match {
+          case None =>
+            (fixedValues, GreaterEq)
           case Some(Bound(value, isInclusive)) =>
-            val column = index0.columns(fixedValues.length)
-            val y = field(x, column.name)
-            val endOp = inverseIfDescending(if (isInclusive) LessEq else Less)
+            (fixedValues :+ value, if (isInclusive) GreaterEq else Greater)
+        }
+        val startOp = inverseIfDescending(startOpIfAscending)
+        val test = fun[Row, Boolean] { _x =>
+          val x = _x.asRep[Struct]
 
-            comparisonOp(endOp, y, value)
+          val firstCondition = endBound match {
+            case None => toRep(true)
+            case Some(Bound(value, isInclusive)) =>
+              val column = index0.columns(fixedValues.length)
+              val y = field(x, column.name)
+              val endOp = inverseIfDescending(if (isInclusive) LessEq else Less)
+
+              comparisonOp(endOp, y, value)
+          }
+
+          (index0.columns, fixedValues).zipped.foldLeft(firstCondition) {
+            case (cond, (column, value)) =>
+              val y = field(x, column.name)
+              cond && comparisonOp(Eq, y, value)
+          }
         }
 
-        (index0.columns, fixedValues).zipped.foldLeft(firstCondition) {
-          case (cond, (column, value)) =>
-            val y = field(x, column.name)
-            cond && comparisonOp(Eq, y, value)
-        }
+        if (keyValues.nonEmpty) {
+          val repKeyValues = keyArray(keyValues)
+          sourceIter().fromKeyWhile(repKeyValues, startOp, test)
+        } else
+          sourceIter().takeWhile(test)
       }
-
-      val boundedIter = if (keyValues.nonEmpty) {
-        val repKeyValues = SArray.fromSyms(keyValues.asInstanceOf[List[Rep[Any]]])(AnyElement)
-        sourceIter().fromKeyWhile(repKeyValues, startOp, test)
-      } else
-        sourceIter().takeWhile(test)
       // if bounds.isEmpty this is the same as fullScan()
-      IterBasedRelation(boundedIter)
+      IterBasedRelation(iter)
     }
   }
 }
