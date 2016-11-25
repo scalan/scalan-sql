@@ -125,10 +125,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           case RelationMethods.filter(_, _) | RelationMethods.map(_, _) =>
             // pipelined, no extra seeks
             20.0
-          case MethodCall(r, m, _, _) if
-            r.elem.isInstanceOf[ScannableElem[_, _]] ||
-              r.elem.isInstanceOf[RelationElem[_, _]] ||
-              r.elem.isInstanceOf[IterElem[_, _]] =>
+          case MethodCall(r, m, _, _) if isSqlSpecific(r.elem) =>
             // will fix costs for other operations later
             100.0
           case _ =>

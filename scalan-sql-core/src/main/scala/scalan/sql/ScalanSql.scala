@@ -259,4 +259,10 @@ trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsD
     override def toString = s"ExtraDeps(${deps.mkString(", ")})"
   }
   def extraDeps(deps: Rep[_]*) = reifyObject(ExtraDeps(deps))
+
+  override def shouldUnpack(e: Elem[_]) =
+    !isSqlSpecific(e) && super.shouldUnpack(e)
+
+  def isSqlSpecific(e: Elem[_]) =
+    e.isInstanceOf[IterElem[_, _]] || e.isInstanceOf[RelationElem[_, _]] || e.isInstanceOf[ScannableElem[_, _]]
 }
