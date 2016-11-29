@@ -462,15 +462,47 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
         case _ => super.rewriteDef(d)
       }
 
-    case IterMethods.flatMap0or1(_iter, Def(
-    Lambda(l: Lambda[a, Opt[b]] @unchecked, _, _, Def(Tup(Def(Const(b)), v)))
-    )) =>
+    // last rule for flatMap0or1
+    case IterMethods.flatMap0or1(_iter, f @ Def(Lambda(l: Lambda[a, Opt[b]] @unchecked, _, _, Def(y)))) =>
       val iter = _iter.asRep[Iter[a]]
-      if (b) {
-        val f1 = copyLambda(l, v)
-        iter.map(f1)
-      } else
-        Iter.empty(v.elem)
+      y match {
+        case Tup(Def(Const(b)), v) =>
+          if (b) {
+            val f1 = copyLambda(l, v)
+            iter.map(f1)
+          } else
+            Iter.empty(v.elem)
+        case _view: PairView[_, b1, _, _] =>
+          // TODO this rule works around PairView getting created in StructsPass, but creates extra map
+          // find if just disabling StructsPass works better, or there is other way to do it
+          val view = _view.asInstanceOf[PairView[Boolean, b1, Boolean, b]]
+          val iso1 = view.iso1
+          val iso2 = view.iso2
+          assert(iso1.isIdentity && iso1.eTo == BooleanElement)
+          val iso = view.iso
+          val f1 = iso.fromFun << f.asRep[a => Opt[b]]
+          val iter1 = iter.flatMap0or1(f1)
+          iter1.map(iso2.toFun)
+
+          // doesn't work (stack overflow)
+//          implicit val eOptB = iso.eTo
+//          val f1 = f.asRep[a => Opt[b]] >> fun[Opt[b], Opt[b]] { optB =>
+//            val optB1 = iso.from(optB)
+//            val newB = iso2.to(optB1._2)
+//            (optB1._1, newB)
+//          }
+//          iter.flatMap0or1(f1)
+
+          // also doesn't work
+//          implicit val eOptB1 = iso.eFrom
+//          implicit val eOptB = iso.eTo
+//          val f1 = f.asRep[a => Opt[b]] >> iso.fromFun >> fun { x: ROpt[b1] =>
+//            (x._1, iso2.to(x._2))
+//          }
+//          iter.flatMap0or1(f1)
+
+        case _ => super.rewriteDef(d)
+      }
 
     case TableIterMethods.byRowids(iter, Def(ExpSingletonIter(value: Rep[a])), f) =>
       iter.uniqueByRowid(f.asRep[a => Rowid](value))
