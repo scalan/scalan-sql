@@ -159,7 +159,8 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
     case iterElem: IterElem[_, _] =>
       m.getName match {
         case "filter" | "takeWhile" | "fromKeyWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" =>
-          receiver.elem
+          val eRow = receiver.elem.asInstanceOf[IterElem[_, _]].eRow
+          iterElement(eRow)
         case "map" =>
           val f = args(0).asInstanceOf[Exp[_]]
           val eB = f.elem.asInstanceOf[FuncElem[_, _]].eRange
