@@ -379,14 +379,19 @@ class SqlParser {
         (ORDER ~ BY ~> ordering).? ~
         (LIMIT ~> expression).? ^^ {
         case d ~ p ~ r ~ f ~ g ~ h ~ o ~ l =>
+          def fold[A](op: Operator, x: Option[A])(f: (Operator, A) => Operator) = x match {
+            case None => op
+            case Some(x1) => f(op, x1)
+          }
+
           val base = r
-          val withFilter = f.map(Filter(base, _)).getOrElse(base)
+          val withFilter = fold(base, f)(Filter)
           val withProjection = Project(withFilter, p)
-          val withGroupBy = g.map(GroupBy(withProjection, _)).getOrElse(withProjection)
-          val withDistinct = d.map(_ => Distinct(withGroupBy)).getOrElse(withGroupBy)
-          val withHaving = h.map(Filter(withDistinct, _)).getOrElse(withDistinct)
-          val withOrder = o.map(OrderBy(withHaving, _)).getOrElse(withHaving)
-          val withLimit = l.map(Limit(withOrder, _)).getOrElse(withOrder)
+          val withGroupBy = fold(withProjection, g)(GroupBy)
+          val withDistinct = fold(withGroupBy, d) { case (op, _) => Distinct(op) }
+          val withHaving = fold(withDistinct, h)(Filter)
+          val withOrder = fold(withHaving, o)(OrderBy)
+          val withLimit = fold(withOrder, l)(Limit)
           withLimit
       }
 
