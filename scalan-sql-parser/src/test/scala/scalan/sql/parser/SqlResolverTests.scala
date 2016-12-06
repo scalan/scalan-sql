@@ -46,11 +46,11 @@ class SqlResolverTests extends BaseNestedTests {
   }
 
   it("filter on projected columns") {
-    pendingUntilFixed(assertQueryIsResolved(
+    assertQueryIsResolved(
       """select n_regionkey + n_nationkey as key_sum from nation
         |where key_sum > 10
         |order by key_sum""".stripMargin
-    ))
+    )
   }
 
   it("master-detail query") {

@@ -196,10 +196,18 @@ class SqlResolver(val schema: Schema) {
         else
           resolveNonAggregateProjectionWithResolvedParent(parent1, columns, inputs)
       }
-    case GroupBy(Project(parent, columns), groupedBy) =>
-      resolveOperatorAddingExpression0(parent, inputs, groupedBy) { (parent1, inputs1) =>
-        withContext(parent1) {
-          resolveAggregates(parent1, groupedBy, columns, inputs1)
+    case GroupBy(parent, groupedBy) =>
+      val (parent1, columns) = parent match {
+        case Project(parent1, columns) =>
+          (parent1, columns)
+        case Filter(Project(parent1, columns), predicate) =>
+          (Filter(parent1, predicate), columns)
+        case _ =>
+          throw new SqlException(s"Unexpected parent for a GroupBy:\n$parent")
+      }
+      resolveOperatorAddingExpression0(parent1, inputs, groupedBy) { (parent2, inputs1) =>
+        withContext(parent2) {
+          resolveAggregates(parent2, groupedBy, columns, inputs1)
         }
       }
     case OrderBy(parent, columns) =>
@@ -324,18 +332,105 @@ class SqlResolver(val schema: Schema) {
         (Join(left1, right1, joinType, joinSpec), clausesDependingOnBoth)
       case Filter(parent, condition) =>
         doPushdown(parent, (clauses ++ conjunctiveClauses(condition)).distinct)
+      case Project(parent, columns) =>
+        def pushdownIfAllNotDerived(exprs: List[Expression]): Option[List[Expression]] = exprs match {
+          case Nil => Some(Nil)
+          case head :: tail =>
+            for {
+              head1 <- pushdownIfNotDerived(head)
+              tail1 <- pushdownIfAllNotDerived(tail)
+            } yield head1 :: tail1
+        }
+
+        def pushdownIfNotDerived(expr: Expression): Option[Expression] = expr match {
+          case _: Literal | _: Parameter | _: ResolvedTableAttribute =>
+            Some(expr)
+          case ResolvedProjectedAttribute(parent, _, index) =>
+            parent match {
+              case nonDerived: ResolvedAttribute => Some(nonDerived)
+              case _ => None
+            }
+          case BinOpExpr(op, left, right) =>
+            for {
+              left1 <- pushdownIfNotDerived(left)
+              right1 <- pushdownIfNotDerived(right)
+            } yield BinOpExpr(op, left1, right1)
+          case LikeExpr(left, right, escape) =>
+            for {
+              left1 <- pushdownIfNotDerived(left)
+              right1 <- pushdownIfNotDerived(right)
+              escape1 <- escape match {
+                case None => Some(None)
+                case Some(e) => pushdownIfNotDerived(e).map(Some.apply)
+              }
+            } yield LikeExpr(left1, right1, escape1)
+          case NegExpr(opd) =>
+            pushdownIfNotDerived(opd).map(NegExpr)
+          case NotExpr(opd) =>
+            pushdownIfNotDerived(opd).map(NotExpr)
+          case CastExpr(exp, tpe) => 
+            pushdownIfNotDerived(exp).map(CastExpr(_, tpe))
+          case AggregateExpr(op, distinct, opd) =>
+            pushdownIfNotDerived(opd).map(AggregateExpr(op, distinct, _))
+          case SubstrExpr(str, from, len) =>
+            for {
+              str1 <- pushdownIfNotDerived(str)
+              from1 <- pushdownIfNotDerived(from)
+              len1 <- pushdownIfNotDerived(len)
+            } yield SubstrExpr(str1, from1, len1)
+          case CaseWhenExpr(list) =>
+            pushdownIfAllNotDerived(list).map(CaseWhenExpr)
+          case InListExpr(sel, lst) =>
+            for {
+              sel1 <- pushdownIfNotDerived(sel)
+              lst1 <- pushdownIfAllNotDerived(lst)
+            } yield InListExpr(sel1, lst1)
+          case ExistsExpr(q) =>
+            // TODO query also needs to be pushed down if possible (below as well)
+            // pushdownIfNotDerived(q).map(ExistsExpr)
+            None
+          case SelectExpr(s) =>
+            // pushdownIfNotDerived(s).map(SelectExpr)
+            None
+          case InExpr(sel, query) =>
+            // pushdownIfNotDerived(sel).map(InExpr(_, query))
+            None
+          case FuncExpr(name, args) =>
+            pushdownIfAllNotDerived(args).map(FuncExpr(name, _))
+          case _ =>
+            throw new SqlException(s"Missing case for doPushdown into a Project: $expr")
+        }
+
+        def partitionPushdownableClauses(clauses: List[Expression]): (List[Expression], List[Expression]) = clauses match {
+          case Nil => (Nil, Nil)
+          case head :: tail =>
+            val (pushedDownT, nonPushdownableT) = partitionPushdownableClauses(tail)
+            pushdownIfNotDerived(head) match {
+              case None =>
+                (pushedDownT, head :: nonPushdownableT)
+              case Some(pushedDownH) =>
+                (pushedDownH :: pushedDownT, nonPushdownableT)
+            }
+        }
+
+        val (pushedDown, remaining) = partitionPushdownableClauses(clauses)
+        val parent1 = doPushdownWithNoRemainingClauses(parent, pushedDown)
+        (Project(parent1, columns), remaining)
       case _ => (op, clauses)
     }
 
     def doPushdownWithNoRemainingClauses(op: Operator, clauses: List[Expression]) = {
-      val (pushedDown, remainingClauses) = doPushdown(op, clauses)
-      remainingClauses match {
-        case Nil =>
+      if (clauses.isEmpty)
+        op
+      else {
+        val (pushedDown, remainingClauses) = doPushdown(op, clauses)
+        if (remainingClauses.isEmpty) {
           pushedDown
-        case _ =>
+        } else {
           // TODO check if repeated filters perform better due to lack of shortcutting
           val remainingPredicate = conjunction(remainingClauses)
           Filter(pushedDown, remainingPredicate)
+        }
       }
     }
 

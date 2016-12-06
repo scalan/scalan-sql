@@ -385,9 +385,9 @@ class SqlParser {
           }
 
           val base = r
-          val withFilter = fold(base, f)(Filter)
-          val withProjection = Project(withFilter, p)
-          val withGroupBy = fold(withProjection, g)(GroupBy)
+          val withProjection = Project(base, p)
+          val withFilter = fold(withProjection, f)(Filter)
+          val withGroupBy = fold(withFilter, g)(GroupBy)
           val withDistinct = fold(withGroupBy, d) { case (op, _) => Distinct(op) }
           val withHaving = fold(withDistinct, h)(Filter)
           val withOrder = fold(withHaving, o)(OrderBy)
