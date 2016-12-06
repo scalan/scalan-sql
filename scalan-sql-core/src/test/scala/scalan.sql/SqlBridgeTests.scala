@@ -68,13 +68,29 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
         |where o_orderdate < l_shipdate""".stripMargin)
   }
 
-  // FIXME need to rework SqlResolver to handle these cases
-  it("order by and filter on non-selected columns") {
-    pendingUntilFixed {
+  describe("accessing non-selected columns:") {
+    it("order by and filter") {
       testQuery(
-        """select n_name from nation
-          |where n_comment <> ''
-          |order by n_nationkey""".stripMargin)
+        """SELECT n_name FROM nation
+          |WHERE n_comment <> ''
+          |ORDER BY n_nationkey""".stripMargin)
+    }
+
+    it("group by and order by on same column") {
+      testQuery(
+        """SELECT MAX(n_nationkey) FROM nation
+          |GROUP BY n_regionkey
+          |ORDER BY n_regionkey
+        """.stripMargin)
+    }
+
+    it("join and order by") {
+      testQuery(
+        """SELECT (l_partkey + o_custkey) AS s
+          |FROM lineitem JOIN orders ON l_orderkey = o_orderkey
+          |WHERE o_orderdate > '1998-07-12'
+          |ORDER BY o_custkey
+        """.stripMargin)
     }
   }
 

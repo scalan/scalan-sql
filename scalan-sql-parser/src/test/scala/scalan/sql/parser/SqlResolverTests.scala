@@ -19,14 +19,6 @@ class SqlResolverTests extends BaseNestedTests {
     }
   }
 
-  it("order by and filter on non-selected columns") {
-    pendingUntilFixed(assertQueryIsResolved(
-      """select n_name from nation
-        |where n_comment <> ''
-        |order by n_nationkey""".stripMargin
-    ))
-  }
-
   it("filter on projected columns") {
     pendingUntilFixed(assertQueryIsResolved(
       """select n_regionkey + n_nationkey as key_sum from nation

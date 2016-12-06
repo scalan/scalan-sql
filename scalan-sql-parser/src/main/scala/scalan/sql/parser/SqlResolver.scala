@@ -44,6 +44,35 @@ class SqlResolver(val schema: Schema) {
     result
   }
 
+  case class ResolutionInputs(requiredAttributes: Set[UnresolvedAttribute]) {
+    def unresolvedAttributes(op: Any): Iterator[UnresolvedAttribute] = op match {
+      case attr: UnresolvedAttribute => Iterator(attr)
+      case seq: Seq[_] => seq.iterator.flatMap(unresolvedAttributes)
+      case p: Product => p.productIterator.flatMap(unresolvedAttributes)
+      case _ => Iterator.empty
+    }
+
+    def add(expressions: List[Expression]): ResolutionInputs =
+      ResolutionInputs(requiredAttributes ++ unresolvedAttributes(expressions))
+  }
+
+  case class ResolutionOutput(op: Operator, optProjection: Option[List[ProjectionColumn]]) {
+    def map(f: Operator => Operator) = ResolutionOutput(f(op), optProjection)
+    def project() =
+      optProjection.fold(this)(projection => ResolutionOutput(Project(op, projection), None))
+    def projectIfEnough(inputs: ResolutionInputs) = optProjection match {
+      case None =>
+        this
+      case Some(finalProjection) =>
+        val projected = project()
+        val ctx = buildContext(projected.op)
+        if (inputs.requiredAttributes.forall(ctx.resolveColumn(_).isDefined))
+          projected
+        else
+          this
+    }
+  }
+
   def resolveAggregates(parent: Operator, groupedBy: ExprList, columns: List[SelectListElement]): Operator = {
     def simplifyAgg(x: Expression): Expression = x match {
       case AggregateExpr(Count, false, _) =>
@@ -130,32 +159,37 @@ class SqlResolver(val schema: Schema) {
     }
   }
 
-  def resolveOperator(op: Operator): Operator = op match {
+  def resolveOperator(op: Operator) = {
+    resolveOperator0(op, ResolutionInputs(Set.empty)).project().op
+  }
+
+  private def resolveOperator0(op: Operator, inputs: ResolutionInputs): ResolutionOutput = op match {
     case Scan(tableName, _) =>
-      op
-    case Distinct(table) =>
-      Distinct(resolveOperator(op))
+      ResolutionOutput(op, None)
+    case Distinct(op) =>
+      resolveOperator0(op, inputs).map(Distinct.apply)
     case Union(left, right) =>
-      Union(resolveOperator(left), resolveOperator(right))
+      resolveSetOp(left, right, inputs)(Union.apply)
     case Except(left, right) =>
-      Except(resolveOperator(left), resolveOperator(right))
+      resolveSetOp(left, right, inputs)(Except.apply)
     case Intersect(left, right) =>
-      Intersect(resolveOperator(left), resolveOperator(right))
+      resolveSetOp(left, right, inputs)(Intersect.apply)
     case TableAlias(table, alias) =>
       // TODO alias should be removed during resolution, but we need to make sure AliasContext is produced
       // For now aliases are just ignored in ScalanSqlBridge
-      TableAlias(resolveOperator(table), alias)
+      resolveOperator0(table, inputs).map(TableAlias(_, alias))
     case Filter(parent, predicate) =>
-      val parent1 = resolveOperator(parent)
-      val predicate1 = withContext(parent1) {
-        resolveExpr(predicate)
+      resolveOperatorAddingExpression(parent, inputs, List(predicate)) {parent1 =>
+        val predicate1 = withContext(parent1) {
+          resolveExpr(predicate)
+        }
+        pushdownFilter(parent1, predicate1)
       }
-      pushdownFilter(parent1, predicate1)
     case Project(parent, columns) =>
-      val parent1 = resolveOperator(parent)
+      val ResolutionOutput(parent1, optProj1) = resolveOperator0(parent, inputs)
       withContext(parent1) {
         if (columns.exists(containsAggregates))
-          resolveAggregates(parent1, Nil, columns)
+          ResolutionOutput(resolveAggregates(parent1, Nil, columns), optProj1)
         else {
           val columns1 = columns.flatMap {
             case ProjectionColumn(expr, alias) =>
@@ -165,29 +199,48 @@ class SqlResolver(val schema: Schema) {
                 throw new SqlException(s"Can't resolve ${qualifier.fold("")(_ + ".")}*")
               }
           }
-          Project(parent1, columns1)
+          // TODO debug and simplify! Move logic to ResolutionInputs?
+          val res1 = Project(parent1, columns1)
+          val ctx1 = buildContext(res1)
+          val missingColumns = inputs.requiredAttributes.filterNot {
+            ctx1.resolveColumn(_).isDefined
+          }.map {
+            ProjectionColumn(_, None)
+          }
+          if (missingColumns.isEmpty)
+            ResolutionOutput(res1, None)
+          else {
+            val project1 = Project(parent, columns ++ missingColumns)
+            // go into recursion, but this time missingColumns should be empty!
+            val out1 = resolveOperator0(project1, inputs)
+            assert(out1.optProjection.isEmpty)
+            ResolutionOutput(out1.op, Some(columns1))
+          }
         }
       }
     case GroupBy(Project(parent, columns), groupedBy) =>
-      val parent1 = resolveOperator(parent)
-      withContext(parent1) {
-        resolveAggregates(parent1, groupedBy, columns)
+      resolveOperatorAddingExpression(parent, inputs, groupedBy) { parent1 =>
+        withContext(parent1) {
+          resolveAggregates(parent1, groupedBy, columns)
+        }
       }
     case OrderBy(parent, columns) =>
-      val parent1 = resolveOperator(parent)
-      withContext(parent1) {
-        OrderBy(parent1, columns.map(s => s.copy(expr = resolveExpr(s.expr))))
+      resolveOperatorAddingExpression(parent, inputs, columns.map(_.expr)) { parent1 =>
+        withContext(parent1) {
+          OrderBy(parent1, columns.map(s => s.copy(expr = resolveExpr(s.expr))))
+        }
       }
     case Limit(parent, limit) =>
-      val parent1 = resolveOperator(parent)
-      withContext(parent1) {
-        Limit(parent1, resolveExpr(limit))
+      resolveOperator0(parent, inputs).map { parent1 =>
+        withContext(parent1) {
+          Limit(parent1, resolveExpr(limit))
+        }
       }
     case SubSelect(parent) =>
-      resolveOperator(parent)
+      resolveOperator0(parent, inputs)
     case Join(left, right, joinType, spec) =>
-      val left1 = resolveOperator(left)
-      val right1 = resolveOperator(right)
+      val ResolutionOutput(left1, optProj1) = resolveOperator0(left, inputs)
+      val ResolutionOutput(right1, optProj2) = resolveOperator0(right, inputs)
       val condition1 = spec match {
         case On(condition) =>
           withContext(left1) {
@@ -209,14 +262,42 @@ class SqlResolver(val schema: Schema) {
           // requires implementing operatorType, won't support it yet
           throw new NotImplementedError("Natural joins not supported yet")
       }
-      Join(left1, right1, joinType, On(condition1))
+      val optProj = (optProj1, optProj2) match {
+        case (Some(proj1), Some(proj2)) =>
+          Some(proj1 ++ proj2)
+        case (None, None) =>
+          None
+        case _ =>
+          // FIXME what is the correct behavior here?
+          throw new SqlException(s"Unexpected result during resolveOperator0(\n$op,\n$inputs): optProj1 is $optProj1, optProj2 is $optProj2")
+      }
+      ResolutionOutput(Join(left1, right1, joinType, On(condition1)), optProj)
     case CrossJoin(outer, inner) =>
-      CrossJoin(resolveOperator(outer), resolveOperator(inner))
+      resolveSetOp(outer, inner, inputs)(CrossJoin.apply)
     case UnionJoin(outer, inner) =>
-      UnionJoin(resolveOperator(outer), resolveOperator(inner))
+      resolveSetOp(outer, inner, inputs)(UnionJoin.apply)
     case _ =>
       throw new NotImplementedError(s"Can't resolve operator\n$op")
   }
+
+  private def resolveOperatorAddingExpression(op: Operator, inputs: ResolutionInputs, extraExpressions: List[Expression])
+                              (f: Operator => Operator) = {
+    val out1 = resolveOperator0(op, inputs.add(extraExpressions))
+    val out2 = out1.map(f)
+    out2.projectIfEnough(inputs)
+  }
+
+  private def resolveSetOp(op1: Operator, op2: Operator, inputs: ResolutionInputs)(f: (Operator, Operator) => Operator) = {
+    val ResolutionOutput(op1out, finalProjection1) = resolveOperator0(op1, inputs)
+    val ResolutionOutput(op2out, finalProjection2) = resolveOperator0(op1, inputs)
+    val finalProjection = (finalProjection1, finalProjection2) match {
+      case (Some(p1), Some(p2)) if p1 != p2 =>
+        throw new SqlException(s"Different projections required from resolving $op1 and $op2 under $inputs, don't know what to do")
+      case _ => finalProjection1.orElse(finalProjection2)
+    }
+    ResolutionOutput(f(op1out, op2out), finalProjection)
+  }
+
 
   def pushdownFilter(parent: Operator, predicate: Expression): Operator = {
     val clauses = conjunctiveClauses(predicate)
@@ -250,6 +331,7 @@ class SqlResolver(val schema: Schema) {
     doPushdownWithNoRemainingClauses(parent, clauses)
   }
 
+  // TODO should ResolutionInputs be passed here and resolveOperator0 be used for subqueries?
   def resolveExpr(expr: Expression): Expression = expr match {
     case SelectExpr(op) =>
       SelectExpr(resolveOperator(op))
@@ -485,8 +567,13 @@ class SqlResolver(val schema: Schema) {
     def lookup(resolved: ResolvedAttribute): Option[Binding] = resolved match {
       case ResolvedProjectedAttribute(_, _, i) =>
         Some(Binding(scope.name, List(Index(i))))
-      case _ =>
-        None
+      case rta: ResolvedTableAttribute =>
+        columns.indexWhere(_.expr == rta) match {
+          case -1 =>
+            None
+          case i =>
+            Some(Binding(scope.name, List(Index(i))))
+        }
     }
   }
 
