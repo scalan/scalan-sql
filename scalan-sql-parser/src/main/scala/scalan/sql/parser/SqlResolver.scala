@@ -154,12 +154,7 @@ class SqlResolver(val schema: Schema) {
     case Project(parent, columns) =>
       val parent1 = resolveOperator(parent)
       withContext(parent1) {
-        if (columns.exists {
-          case col: ProjectionColumn =>
-            containsAggregates(col)
-          case _: UnresolvedStar =>
-            false
-        })
+        if (columns.exists(containsAggregates))
           resolveAggregates(parent1, Nil, columns)
         else {
           val columns1 = columns.flatMap {
@@ -637,8 +632,12 @@ class SqlResolver(val schema: Schema) {
     case (tpe, funs) => funs.foreach(registerFunctionType(_, tpe))
   }
 
-  def containsAggregates(column: ProjectionColumn): Boolean =
-    containsAggregates(column.expr)
+  def containsAggregates(selectListElement: SelectListElement): Boolean = selectListElement match {
+    case column: ProjectionColumn =>
+      containsAggregates(column.expr)
+    case _: UnresolvedStar =>
+      false
+  }
 
   def containsAggregates(expr: Expression): Boolean =
     expr match {

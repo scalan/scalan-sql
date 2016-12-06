@@ -186,10 +186,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
   }
 
   def generateProjection(inputs: ExprInputs, p: Operator, columns: List[SelectListElement]): Plans[_] = {
+    assert(!columns.exists(resolver.containsAggregates),
+      "Aggregate columns in Project must be handled by SqlResolver")
     // can't contain unresolved star, if it does will get a ClassCastException
     val columns1 = columns.asInstanceOf[List[ProjectionColumn]]
-    assert(!columns1.exists(resolver.containsAggregates),
-      "Aggregate columns in Project must be handled by SqlResolver")
 
     withContext(p) {
       generateOperator(p, inputs).map {
