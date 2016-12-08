@@ -19,12 +19,30 @@ class SqlResolverTests extends BaseNestedTests {
     }
   }
 
-  it("order by and filter on non-selected columns") {
-    pendingUntilFixed(assertQueryIsResolved(
-      """select n_name from nation
-        |where n_comment <> ''
-        |order by n_nationkey""".stripMargin
-    ))
+  describe("accessing non-selected columns:") {
+    it("order by and filter") {
+      assertQueryIsResolved(
+        """SELECT n_name FROM nation
+          |WHERE n_comment <> ''
+          |ORDER BY n_nationkey""".stripMargin)
+    }
+
+    it("group by and order by on same column") {
+      assertQueryIsResolved(
+        """SELECT MAX(n_nationkey) FROM nation
+          |GROUP BY n_regionkey
+          |ORDER BY n_regionkey
+        """.stripMargin)
+    }
+
+    it("join and order by") {
+      assertQueryIsResolved(
+        """SELECT (l_partkey + o_custkey) AS s
+          |FROM lineitem JOIN orders ON l_orderkey = o_orderkey
+          |WHERE o_orderdate > '1998-07-12'
+          |ORDER BY o_custkey
+        """.stripMargin)
+    }
   }
 
   it("filter on projected columns") {
