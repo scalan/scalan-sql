@@ -73,7 +73,7 @@ class SqlResolver(val schema: Schema) {
     }
   }
 
-  def resolveAggregates(parent: Operator, groupedBy: ExprList, columns: List[SelectListElement]): Operator = {
+  def resolveAggregates(parent: Operator, groupedBy: ExprList, columns: List[SelectListElement], inputs: ResolutionInputs): ResolutionOutput = {
     def simplifyAgg(x: Expression): Expression = x match {
       case AggregateExpr(Count, false, _) =>
         CountAllExpr
@@ -153,8 +153,7 @@ class SqlResolver(val schema: Schema) {
         val aggregate = Aggregate(parent, groupedBy.map(resolveExpr), aggregates)
 
         withContext(aggregate) {
-          val resolvedColumns = normalizedColumns.map(_.mapExpr(resolveExpr))
-          Project(aggregate, resolvedColumns)
+          resolveNonAggregateProjectionWithResolvedParent(aggregate, normalizedColumns, inputs)
         }
     }
   }
@@ -188,43 +187,19 @@ class SqlResolver(val schema: Schema) {
     case Project(parent, columns) =>
       val ResolutionOutput(parent1, optProj1) = resolveOperator0(parent, inputs)
       withContext(parent1) {
-        if (columns.exists(containsAggregates))
-          ResolutionOutput(resolveAggregates(parent1, Nil, columns), optProj1)
-        else {
-          val columns1 = columns.flatMap {
-            case ProjectionColumn(expr, alias) =>
-              List(ProjectionColumn(resolveExpr(expr), alias))
-            case UnresolvedStar(qualifier) =>
-              currScope.ctx.resolveStar(qualifier).getOrElse {
-                throw new SqlException(s"Can't resolve ${qualifier.fold("")(_ + ".")}*")
-              }
-          }
-          // TODO debug and simplify! Move logic to ResolutionInputs?
-          val res1 = Project(parent1, columns1)
-          val ctx1 = buildContext(res1)
-          val missingColumns = inputs.requiredAttributes.collect {
-            case col if ctx1.resolveColumn(col).isEmpty =>
-              ProjectionColumn(col, None)
-          }
-          if (missingColumns.isEmpty)
-            ResolutionOutput(res1, None)
-          else {
-            val project1 = Project(parent1, columns1 ++ missingColumns)
-            // go into recursion, but this time missingColumns should be empty!
-            val out1 = resolveOperator0(project1, inputs)
-            assert(out1.optProjection.isEmpty)
-            val columns2 = columns1.zipWithIndex.map {
-              case (col, i) =>
-                ProjectionColumn(ResolvedProjectedAttribute(col.expr, None, i), col.alias)
-            }
-            ResolutionOutput(out1.op, Some(columns2))
-          }
+        if (columns.exists(containsAggregates)) {
+          val out1 = resolveAggregates(parent1, Nil, columns, inputs)
+          // TODO what should be done if this condition fails? Can it fail?
+          assert(out1.optProjection.isEmpty || out1.optProjection == optProj1)
+          ResolutionOutput(out1.op, optProj1)
         }
+        else
+          resolveNonAggregateProjectionWithResolvedParent(parent1, columns, inputs)
       }
     case GroupBy(Project(parent, columns), groupedBy) =>
-      resolveOperatorAddingExpression(parent, inputs, groupedBy) { parent1 =>
+      resolveOperatorAddingExpression0(parent, inputs, groupedBy) { (parent1, inputs1) =>
         withContext(parent1) {
-          resolveAggregates(parent1, groupedBy, columns)
+          resolveAggregates(parent1, groupedBy, columns, inputs1)
         }
       }
     case OrderBy(parent, columns) =>
@@ -278,10 +253,48 @@ class SqlResolver(val schema: Schema) {
       throw new NotImplementedError(s"Can't resolve operator\n$op")
   }
 
+  def resolveNonAggregateProjectionWithResolvedParent(parent: Operator, columns: List[SelectListElement], inputs: ResolutionInputs): ResolutionOutput = {
+    val columns1 = columns.flatMap {
+      case ProjectionColumn(expr, alias) =>
+        List(ProjectionColumn(resolveExpr(expr), alias))
+      case UnresolvedStar(qualifier) =>
+        currScope.ctx.resolveStar(qualifier).getOrElse {
+          throw new SqlException(s"Can't resolve ${qualifier.fold("")(_ + ".")}*")
+        }
+    }
+    // TODO debug and simplify! Move logic to ResolutionInputs?
+    val res1 = Project(parent, columns1)
+    val ctx1 = buildContext(res1)
+    val missingColumns = inputs.requiredAttributes.collect {
+      case col if ctx1.resolveColumn(col).isEmpty =>
+        ProjectionColumn(col, None)
+    }
+    if (missingColumns.isEmpty)
+      ResolutionOutput(res1, None)
+    else {
+      // go into recursion, but this time missingColumns should be empty!
+      val out1 = resolveNonAggregateProjectionWithResolvedParent(parent, columns1 ++ missingColumns, inputs)
+      assert(out1.optProjection.isEmpty)
+      val columns2 = columns1.zipWithIndex.map {
+        case (col, i) =>
+          ProjectionColumn(ResolvedProjectedAttribute(col.expr, None, i), col.alias)
+      }
+      ResolutionOutput(out1.op, Some(columns2))
+    }
+  }
+
   private def resolveOperatorAddingExpression(op: Operator, inputs: ResolutionInputs, extraExpressions: List[Expression])
-                              (f: Operator => Operator) = {
+                                             (f: Operator => Operator): ResolutionOutput = {
     val out1 = resolveOperator0(op, inputs.add(extraExpressions))
     val out2 = out1.map(f)
+    out2.projectIfEnough(inputs)
+  }
+
+  private def resolveOperatorAddingExpression0(op: Operator, inputs: ResolutionInputs, extraExpressions: List[Expression])
+                                              (f: (Operator, ResolutionInputs) => ResolutionOutput): ResolutionOutput = {
+    val inputs1 = inputs.add(extraExpressions)
+    val out1 = resolveOperator0(op, inputs1)
+    val out2 = f(out1.op, inputs1) // TODO or inputs?
     out2.projectIfEnough(inputs)
   }
 
