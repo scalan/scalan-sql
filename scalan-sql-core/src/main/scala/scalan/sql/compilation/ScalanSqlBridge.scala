@@ -189,15 +189,16 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     val columns1 = columns.asInstanceOf[List[ProjectionColumn]]
 
     withContext(p) {
-      generateOperator(p, inputs).map {
+      val inputs1 = inputs.projectionOrderList(columns1)
+      generateOperator(p, inputs1).map {
         case pExp: Plan[a] @unchecked =>
           val projection = inferredFun(pExp.eRow) { x =>
-            val inputs1 = inputs + (currentScopeName -> x)
+            val inputs2 = inputs1 + (currentScopeName -> x)
             val unnamedCounter = new IntRef(0)
 
             val fields = columns1.map { exp =>
               val name = this.name(exp, unnamedCounter)
-              val value = generateExpr(exp.expr, inputs1)
+              val value = generateExpr(exp.expr, inputs2)
               (name, value)
             }
             struct(fields)
@@ -253,11 +254,27 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       structElement(fieldElems)
     }
 
-    // Do not treat case of empty usedAttributes separately for now
-    val usedAttributes = inputs.usedAttributes(scan).toSeq.sortBy(_.index)
-    val eUsedAttributes = attributesToElem(usedAttributes)
+    val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns, optAttributeOrder) = inputs.columnUseInfo.forScan(scan)
 
-    val SingleTableColumnUseInfo(allConstraints, orderColumns, groupColumns) = inputs.columnUseInfo.forScan(scan)
+    // If optAttributeOrder is defined, it contains the order for next projection.
+    // If it contains all used attributes, use this order and avoid an extra `map`.
+    // Otherwise prefer the order in table or in index
+    def chooseAttributeOrder(attributes: Traversable[ResolvedTableAttribute]) = optAttributeOrder match {
+      case Some(attributeOrder) if attributeOrder.toSet == attributes.toSet =>
+        attributeOrder
+      case _ =>
+        attributes match {
+          case attributes: Set[ResolvedTableAttribute] =>
+            attributes.toSeq.sortBy(_.index)
+          case attributes: Seq[ResolvedTableAttribute] =>
+            attributes
+          case _ =>
+            !!!(s"Expected Set or Seq, got $attributes")
+        }
+    }
+
+    val usedAttributes = chooseAttributeOrder(inputs.usedAttributes(scan))
+    val eUsedAttributes = attributesToElem(usedAttributes)
 
     val filterClauses = filter.fold(Seq.empty[Expression])(conjunctiveClauses)
     def filterByClauses[A](plan: Plan[A], clauses: Seq[Expression]) = {
@@ -415,7 +432,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           // TODO is this correct in all cases? In particular, if table contains columns named `rowid`, `_rowid_`?
           val missingAttributes =
             missingKeyColumns.map(forceResolvedTableAttributeByName(table, scanId, _))
-          val allAttributesToReadFromIndex = usedAttributesInIndex ++ missingAttributes
+          val allAttributesToReadFromIndex = chooseAttributeOrder(usedAttributesInIndex ++ missingAttributes)
           attributesToElem(allAttributesToReadFromIndex) match {
             case eIndexRow: Elem[indexRow] =>
               implicit val _: Elem[indexRow] = eIndexRow
@@ -855,6 +872,20 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
 
     def withoutOrderAndGroupInfo =
       copy(columnUseInfo = columnUseInfo.copy(orderBy = Nil, groupBy = Nil))
+
+    def projectionOrderList(columns: List[ProjectionColumn]) = {
+      val underlyingTableAttributes = columns.flatMap(col => underlyingTableColumn(col.expr))
+      // If any columns aren't directly from a table, None; else the list of underlying table attributes.
+      // Used in generateProjection.
+      // If columns don't have aliases, or aliases are same as names (e.g. `SELECT x.a AS a, b FROM ...`)
+      // the resulting projection will be an identity function; if they have non-trivial aliases different
+      // from names, the function should still be optimizable to a single `memcpy`.
+      val newAttributeOrder = if (underlyingTableAttributes.length == columns.length)
+        Some(underlyingTableAttributes)
+      else
+        None
+      copy(columnUseInfo = columnUseInfo.copy(optAttributeOrder = newAttributeOrder))
+    }
 
     // TODO inline
     def resolveColumn(c: ResolvedAttribute) = {

@@ -71,6 +71,11 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
         |where o_orderdate < l_shipdate""".stripMargin)
   }
 
+  it("attribute reordering") {
+    // verify there is no map in graph
+    testQuery("""SELECT o_comment, o_custkey FROM orders""")
+  }
+
   describe("accessing non-selected columns:") {
     it("order by and filter") {
       testQuery(
