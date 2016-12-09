@@ -84,7 +84,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     // TODO Improve cost calculation
     lazy val cost = {
       val graph = new PGraph(node)
-      val FULL_SCAN_COST = 100.0
+      val FULL_SCAN_COST = 500.0
       val costs = graph.scheduleAll.iterator.map {
         te => te.rhs match {
           case ScannableMethods.fullScan(_) =>
@@ -114,8 +114,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
                 1.0
             cost0 * mult1 * mult2
           case TableScannableMethods.byRowids(_, _, _) =>
-            // lots of seeks
-            500.0
+            // lots of seeks (but really depends on the arguments)
+            200.0
           case RelationMethods.sort(_, _) | RelationMethods.sortBy(_, _) =>
             2000.0
           case RelationMethods.partialSort(_, _, _) =>
