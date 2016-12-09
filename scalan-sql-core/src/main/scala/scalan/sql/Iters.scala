@@ -219,7 +219,20 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       iter1
     case IterMethods.takeWhile(iter1 @ Def(IterMethods.filter(iter, f)), g) if f == g =>
       iter1
-      // TODO do we need rules for filter/filter, takeWhile/takeWhile, range/takeWhile fusion?
+    case IterMethods.filter(iter1 @ Def(IterMethods.filter(iter: RIter[a], f)), g) =>
+      if (f == g)
+        iter1
+      else {
+        implicit val eA: Elem[a] = iter.elem.eRow
+        iter.filter(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
+      }
+    case IterMethods.takeWhile(iter1 @ Def(IterMethods.takeWhile(iter: RIter[a], f)), g) =>
+      if (f == g)
+        iter1
+      else {
+        implicit val eA: Elem[a] = iter.elem.eRow
+        iter.takeWhile(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
+      }
 
     case _ => super.rewriteDef(d)
   }
