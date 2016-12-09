@@ -230,4 +230,144 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
     WrapStructRelation[A, Struct, Struct](env, f)(eRow, eEnvR, eEnvI)
   }
 
+  // Many (currently all) rules below have equivalents for iters, which would fire on the next stage,
+  // but having them for relations as well allows better cost estimation.
+  // If EmptyRelation, ConditionalRelation, etc. are added, uncomment the relevant rules and fix if necessary.
+  // Same if new methods are added.
+  // Alternative would be to lower to Iters _before_ evaluating cost.
+  override def rewriteDef[T](d: Def[T]): Exp[_] = d match {
+
+//    case ExpConditionalRelation(Def(Const(b)), relation) =>
+//      if (b)
+//        relation
+//      else
+//        Relation.empty(relation.elem.eRow)
+//
+//    // must be last rule for ExpConditionalRelation
+//    case ExpConditionalRelation(cond, relation @ Def(relationDef)) =>
+//      relationDef match {
+//        case _: EmptyRelation[_] =>
+//          relation
+//        case ExpConditionalRelation(cond1, relation1) =>
+//          ExpConditionalRelation(cond && cond1, relation1)(relation1.elem.eRow)
+//        case _ => super.rewriteDef(d)
+//      }
+//
+//    case RelationMethods.isEmpty(Def(ExpConditionalRelation(condition, baseRelation))) =>
+//      !condition || baseRelation.isEmpty
+//    case RelationMethods.toArray(Def(ExpConditionalRelation(condition, baseRelation))) =>
+//      IF (condition) THEN baseRelation.toArray ELSE SArray.empty(baseRelation.elem.eRow)
+//    // has to be handled before other rules for RelationMethods.map/flatMap/etc. so they don't call super.rewriteDef
+//    case MethodCall(condRelation @ Def(ExpConditionalRelation(condition, baseRelation)), m, args, neverInvoke) =>
+//      val methodCall = mkMethodCall(baseRelation, m, args, neverInvoke)
+//      methodCall match {
+//        case baseRelation1: RRelation[a] @unchecked if baseRelation1.elem.isInstanceOf[RelationElem[_, _]] =>
+//          conditionalRelation(condition, baseRelation1)
+//        case nonRelation =>
+//          !!!(s"(${baseRelation.toStringWithDefinition}).${m.getName} called inside ConditionalRelation, got non-relation ${nonRelation.toStringWithDefinition}", (condRelation +: args.collect { case e: Exp[_] => e }): _*)
+//      }
+
+    case RelationMethods.map(relation, Def(IdentityLambda())) =>
+      relation
+    case RelationMethods.map(ys @ Def(d2), f: RFunc[a, b] @unchecked) =>
+      d2.asDef[Relation[a]] match {
+        case RelationMethods.map(xs: RRelation[c] @unchecked, g) => //TODO if hasSingleUsage(ys)
+          val g1 = g.asRep[c => a]
+          implicit val eB = f.elem.eRange
+          implicit val eC = xs.elem.asInstanceOf[RelationElem[c,_]].eRow
+          val res = xs.map { x: Rep[c] => f(g1(x)) }
+          res
+        case _ => super.rewriteDef(d)
+      }
+      case RelationMethods.filter(relation: RRelation[a], Def(VeryConstantLambda(b))) =>
+        if (b) relation else super.rewriteDef(d) // emptyRelation(relation.elem.eRow)
+//    case RelationMethods.filter(relation: RRelation[a], Def(ConstantLambda(c))) =>
+//      conditionalRelation(c, relation)
+//    case RelationMethods.takeWhile(relation: RRelation[a], Def(ConstantLambda(c))) =>
+//      conditionalRelation(c, relation)
+//    case RelationMethods.filter(relation1 @ Def(RelationMethods.takeWhile(relation, f)), g) if f == g =>
+//      relation1
+//    case RelationMethods.takeWhile(relation1 @ Def(RelationMethods.filter(relation, f)), g) if f == g =>
+//      relation1
+    case RelationMethods.filter(relation1 @ Def(RelationMethods.filter(relation: RRelation[a], f)), g) =>
+      if (f == g)
+        relation1
+      else {
+        implicit val eA: Elem[a] = relation.elem.eRow
+        relation.filter(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
+      }
+//    case RelationMethods.takeWhile(relation1 @ Def(RelationMethods.takeWhile(relation: RRelation[a], f)), g) =>
+//      if (f == g)
+//        relation1
+//      else {
+//        implicit val eA: Elem[a] = relation.elem.eRow
+//        relation.takeWhile(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
+//      }
+
+//    // must be last rule for flatMap
+//    case RelationMethods.flatMap(_relation, Def(Lambda(l: Lambda[a, Relation[b]] @unchecked, _, _, y @ Def(d1)))) =>
+//      val relation = _relation.asRep[Relation[a]]
+//      d1 match {
+//        case _: EmptyRelation[_] =>
+//          y // empty relation of the correct type
+//        case ExpSingletonRelation(value) =>
+//          val f1 = copyLambda(l, value)
+//          relation.map(f1)
+//        case ExpConditionalRelation(condition, Def(ExpSingletonRelation(value))) =>
+//          val optValue = Pair(condition, value)
+//          val f1 = copyLambda(l, optValue)
+//          relation.flatMap0or1(f1)
+//        case _ => super.rewriteDef(d)
+//      }
+//
+//    // last rule for flatMap0or1
+//    case RelationMethods.flatMap0or1(_relation, f @ Def(Lambda(l: Lambda[a, Opt[b]] @unchecked, _, _, Def(y)))) =>
+//      val relation = _relation.asRep[Relation[a]]
+//      y match {
+//        case Tup(Def(Const(b)), v) =>
+//          if (b) {
+//            val f1 = copyLambda(l, v)
+//            relation.map(f1)
+//          } else
+//            Relation.empty(v.elem)
+//        case _view: PairView[_, b1, _, _] =>
+//          // TODO this rule works around PairView getting created in StructsPass, but creates extra map
+//          // find if just disabling StructsPass works better, or there is other way to do it
+//          val view = _view.asInstanceOf[PairView[Boolean, b1, Boolean, b]]
+//          val iso1 = view.iso1
+//          val iso2 = view.iso2
+//          assert(iso1.isIdentity && iso1.eTo == BooleanElement)
+//          val iso = view.iso
+//          val f1 = iso.fromFun << f.asRep[a => Opt[b]]
+//          val relation1 = relation.flatMap0or1(f1)
+//          relation1.map(iso2.toFun)
+//
+//        // doesn't work (stack overflow)
+//        //          implicit val eOptB = iso.eTo
+//        //          val f1 = f.asRep[a => Opt[b]] >> fun[Opt[b], Opt[b]] { optB =>
+//        //            val optB1 = iso.from(optB)
+//        //            val newB = iso2.to(optB1._2)
+//        //            (optB1._1, newB)
+//        //          }
+//        //          relation.flatMap0or1(f1)
+//
+//        // also doesn't work
+//        //          implicit val eOptB1 = iso.eFrom
+//        //          implicit val eOptB = iso.eTo
+//        //          val f1 = f.asRep[a => Opt[b]] >> iso.fromFun >> fun { x: ROpt[b1] =>
+//        //            (x._1, iso2.to(x._2))
+//        //          }
+//        //          relation.flatMap0or1(f1)
+//
+//        case _ => super.rewriteDef(d)
+//      }
+//
+//    case TableRelationMethods.byRowids(relation, Def(ExpSingletonRelation(value: Rep[a])), f) =>
+//      relation.uniqueByRowid(f.asRep[a => Rowid](value))
+//    case TableRelationMethods.byRowids(relation, Def(ExpConditionalRelation(c, baseRelation: RRelation[a] @unchecked)), f) =>
+//      conditionalRelation(c, relation.byRowids(baseRelation, f.asRep[a => Rowid]))
+
+    case _ => super.rewriteDef(d)
+  }
+
 }
