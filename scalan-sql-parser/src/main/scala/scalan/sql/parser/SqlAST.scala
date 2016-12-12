@@ -148,10 +148,10 @@ object SqlAST {
     override def toString = s"${p(left)} UNION ${p(right)}"
   }
   case class Except(left: Operator, right: Operator) extends Operator {
-    override def toString = s"${p(left)} UNION ${p(right)}"
+    override def toString = s"${p(left)} EXCEPT ${p(right)}"
   }
   case class Intersect(left: Operator, right: Operator) extends Operator {
-    override def toString = s"${p(left)} UNION ${p(right)}"
+    override def toString = s"${p(left)} INTERSECT ${p(right)}"
   }
 
   case class TableAlias(parent: Operator, alias: String) extends Operator {
