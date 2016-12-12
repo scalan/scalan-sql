@@ -421,6 +421,10 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           implicit val eC = xs.elem.asInstanceOf[IterElem[c,_]].eRow
           val res = xs.map { x: Rep[c] => f(g1(x)) }
           res
+        case IterMethods.flatMap(xs: RIter[c] @unchecked, Def(Lambda(l, _, x, Def(IterMethods.map(ys: RIter[d], g))))) =>
+          val ys1 = ys.map(g.asRep[d => a] >> f)
+          val f1 = copyLambda(l.asInstanceOf[Lambda[c, Iter[a]]], ys1)
+          xs.flatMap(f1)
         case _ => super.rewriteDef(d)
       }
     case IterMethods.filter(iter: RIter[a], Def(ConstantLambda(c))) =>
@@ -431,6 +435,10 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           iter
         case IterMethods.filter(iter1: RIter[a], g) =>
           iter1.filter(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+        case IterMethods.flatMap(xs: RIter[c] @unchecked, Def(Lambda(l, _, x, Def(IterMethods.filter(ys: RIter[a] @unchecked, g))))) =>
+          val ys1 = ys.filter(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+          val f1 = copyLambda(l.asInstanceOf[Lambda[c, Iter[a]]], ys1)
+          xs.flatMap(f1)
         case _ => super.rewriteDef(d)
       }
     case IterMethods.takeWhile(iter: RIter[a], Def(ConstantLambda(c))) =>
@@ -462,6 +470,15 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
         case _ if l.schedule.exists(te => UniqueIterRewriter.isDefinedAt(te.sym)) =>
           val f1 = rewriteLambda(l, UniqueIterRewriter)
           iter.flatMap(f1)
+        // pull out map and filter from the inner loop if they don't depend on l's argument
+        // this reduces overall number of calls and may give an opportunity for filter/filter
+        // or map/map fusion
+        case IterMethods.map(iter1: RIter[c] @unchecked, g) if !l.scheduleSyms.contains(g) =>
+          val f1 = copyLambda(l, iter1)
+          iter.flatMap(f1).map(g.asRep[c => b])
+        case IterMethods.filter(iter1: RIter[c] @unchecked, g) if !l.scheduleSyms.contains(g) =>
+          val f1 = copyLambda(l, iter1)
+          iter.flatMap(f1).filter(g.asRep[c => Boolean])
         case _ => super.rewriteDef(d)
       }
 

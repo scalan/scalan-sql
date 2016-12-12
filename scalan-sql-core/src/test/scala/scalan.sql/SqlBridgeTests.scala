@@ -99,6 +99,7 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
     }
 
     it("join and order by") {
+      // verify no xs.flatMap(x => ...; y.map(f)).map(g) sequence
       testQuery(
         """SELECT (l_partkey + o_custkey) AS s
           |FROM lineitem JOIN orders ON l_orderkey = o_orderkey

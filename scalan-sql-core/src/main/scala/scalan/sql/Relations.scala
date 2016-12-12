@@ -277,6 +277,10 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
           implicit val eC = xs.elem.asInstanceOf[RelationElem[c,_]].eRow
           val res = xs.map { x: Rep[c] => f(g1(x)) }
           res
+        case RelationMethods.flatMap(xs: RRelation[c] @unchecked, Def(Lambda(l, _, x, Def(RelationMethods.map(ys: RRelation[d], g))))) =>
+          val ys1 = ys.map(g.asRep[d => a] >> f)
+          val f1 = copyLambda(l.asInstanceOf[Lambda[c, Relation[a]]], ys1)
+          xs.flatMap(f1)
         case _ => super.rewriteDef(d)
       }
       case RelationMethods.filter(relation: RRelation[a], Def(VeryConstantLambda(b))) =>
@@ -289,6 +293,10 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
 //          relation
         case RelationMethods.filter(relation1: RRelation[a], g) =>
           relation1.filter(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+        case RelationMethods.flatMap(xs: RRelation[c] @unchecked, Def(Lambda(l, _, x, Def(RelationMethods.filter(ys: RRelation[a], g))))) =>
+          val ys1 = ys.filter(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+          val f1 = copyLambda(l.asInstanceOf[Lambda[c, Relation[a]]], ys1)
+          xs.flatMap(f1)
         case _ => super.rewriteDef(d)
       }
 //    case RelationMethods.takeWhile(relation: RRelation[a], Def(ConstantLambda(c))) =>
@@ -303,9 +311,9 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
 //      }
 
 //    // must be last rule for flatMap
-//    case RelationMethods.flatMap(_relation, Def(Lambda(l: Lambda[a, Relation[b]] @unchecked, _, _, y @ Def(d1)))) =>
-//      val relation = _relation.asRep[Relation[a]]
-//      d1 match {
+    case RelationMethods.flatMap(_relation, Def(Lambda(l: Lambda[a, Relation[b]] @unchecked, _, _, y @ Def(d1)))) =>
+      val relation = _relation.asRep[Relation[a]]
+      d1 match {
 //        case _: EmptyRelation[_] =>
 //          y // empty relation of the correct type
 //        case ExpSingletonRelation(value) =>
@@ -315,8 +323,14 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
 //          val optValue = Pair(condition, value)
 //          val f1 = copyLambda(l, optValue)
 //          relation.flatMap0or1(f1)
-//        case _ => super.rewriteDef(d)
-//      }
+        case RelationMethods.map(relation1: RRelation[c] @unchecked, g) if !l.scheduleSyms.contains(g) =>
+          val f1 = copyLambda(l, relation1)
+          relation.flatMap(f1).map(g.asRep[c => b])
+        case RelationMethods.filter(relation1: RRelation[c] @unchecked, g) if !l.scheduleSyms.contains(g) =>
+          val f1 = copyLambda(l, relation1)
+          relation.flatMap(f1).filter(g.asRep[c => Boolean])
+        case _ => super.rewriteDef(d)
+      }
 //
 //    // last rule for flatMap0or1
 //    case RelationMethods.flatMap0or1(_relation, f @ Def(Lambda(l: Lambda[a, Opt[b]] @unchecked, _, _, Def(y)))) =>
