@@ -35,6 +35,11 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
     }
   }
 
+  it("simple rowid access") {
+    // verify that IterSqlBridgeTests version is uniqueByRowid->map, not uniqueValueByRowid->...->ExpConditionalIter
+    testQuery("SELECT o_custkey FROM orders WHERE o_orderkey = 100")
+  }
+
   it("project and filter") {
     testQuery(
       """select l_returnflag, l_linestatus
@@ -65,6 +70,7 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
   }
 
   it("filter comparing columns from different tables") {
+    // verify that IterSqlBridgeTests version uses uniqueValueByKey and then flatMap0or1
     testQuery(
       """select l_orderkey
         |from orders join lineitem on l_orderkey = o_orderkey

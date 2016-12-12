@@ -115,11 +115,14 @@ trait Iters extends ScalanDsl {
 
     // if there are cases where value is guaranteed to exist, add argument for this
     // I don't think there are any at the moment
-    def uniqueByKey(keyValues: Rep[Array[Any]]): RIter[Row] = {
-      // note the call on self to prevent DelayInvokeException passing through
-      val optValue = self.asRep[CursorIter[Row]].uniqueValueByKey(keyValues)
-      Iter.singleIf(optValue._1, optValue._2)
-    }
+    def uniqueByKey(keyValues: Rep[Array[Any]]): RIter[Row] = delayInvoke
+    // Could be implemented as below but we don't want to invoke it at the top level, only inside a join/subquery.
+    // Instead done explicitly by UniqueIterRewriter, search for its usage.
+//    {
+//      // note the call on self to prevent DelayInvokeException passing through
+//      val optValue = self.asRep[CursorIter[Row]].uniqueValueByKey(keyValues)
+//      Iter.singleIf(optValue._1, optValue._2)
+//    }
 
     // TODO should advanceIter return Boolean as well, so this can be implemented?
     /** The first part of the result may not be accessed if the second is false */
@@ -130,10 +133,7 @@ trait Iters extends ScalanDsl {
     def byRowids[B](iter: RIter[B], f: Rep[B => Rowid]): RIter[Row] = delayInvoke
 
     // see comments for CursorIter#uniqueByKey
-    def uniqueByRowid(rowid: Rep[Rowid]): RIter[Row] = {
-      val optValue = self.asRep[TableIter[Row]].uniqueValueByRowid(rowid)
-      Iter.singleIf(optValue._1, optValue._2)
-    }
+    def uniqueByRowid(rowid: Rep[Rowid]): RIter[Row] = delayInvoke
 
     // TODO as for uniqueValue above
     /** The first part of the result may not be accessed if the second is false */
@@ -457,6 +457,11 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           val optValue = Pair(condition, value)
           val f1 = copyLambda(l, optValue)
           iter.flatMap0or1(f1)
+        // below case should only happen in flatMap or in kernel's top level lambda
+        // add similar rewrite rules if found elsewhere
+        case _ if l.schedule.exists(te => UniqueIterRewriter.isDefinedAt(te.sym)) =>
+          val f1 = rewriteLambda(l, UniqueIterRewriter)
+          iter.flatMap(f1)
         case _ => super.rewriteDef(d)
       }
 
@@ -509,4 +514,26 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
 
     case _ => super.rewriteDef(d)
   }
+
+  val UniqueIterRewriter: PartialFunction[Exp[_], Exp[_]] = {
+    case Def(TableIterMethods.uniqueByRowid(iter, rowid)) =>
+      val optValue = iter.uniqueValueByRowid(rowid)
+      Iter.singleIf(optValue._1, optValue._2)
+    case Def(CursorIterMethods.uniqueByKey(iter, key)) =>
+      val optValue = iter.uniqueValueByKey(key)
+      Iter.singleIf(optValue._1, optValue._2)
+  }
+
+  def rewriteLambda[A, B](lam: Lambda[A, B], rewriter: Rewriter): Exp[A => B] = {
+    val newY = mirrorApplyRewriting(lam, lam.x, rewriter)
+    copyLambda(lam, newY)
+  }
+
+  // TODO move up to Scalan after testing and implement mirrorApply using it
+  def mirrorApplyRewriting[A,B](lam: Lambda[A, B], s: Exp[A], rewriter: Rewriter): Exp[B] = {
+    val body = lam.scheduleSyms
+    val (t, _) = DefaultMirror.mirrorSymbols(new MapTransformer(lam.x -> s), rewriter, lam, body)
+    t(lam.y).asRep[B]
+  }
+
 }
