@@ -19,7 +19,6 @@ trait KernelInputsAbs extends Scalan with KernelInputs {
     extends EntityElem[To] {
     lazy val parent: Option[Elem[_]] = None
     lazy val typeArgs = TypeArgs()
-    override def isEntityType = true
     override lazy val tag = {
       weakTypeTag[KernelInput].asInstanceOf[WeakTypeTag[To]]
     }
