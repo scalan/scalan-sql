@@ -212,6 +212,7 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
   }
 
   type Rowid
+  implicit def rowidNum: Numeric[Rowid]
   // if overridden, castToRowid must be as well!
   protected def _initRowidElem(): Elem[_]
   lazy implicit val RowidElement = _initRowidElem().asElem[Rowid]
@@ -230,6 +231,7 @@ trait ScalanSqlStd extends ScalanDslStd with ScannablesDslStd with KernelInputsD
   override def pack[A](x: A): String = x.toString
 }
 trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsDslExp with ItersDslExp with RelationsDslExp with ScalanSql with SqlSlicing {
+  override implicit def rowidNum = Numeric.LongIsIntegral.asInstanceOf[Numeric[Rowid]]
   override protected def _initRowidElem(): Elem[_] = LongElement
   override def _castToRowid(x: Rep[_]): Rep[_] = x.elem match {
     case IntElement =>

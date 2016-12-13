@@ -901,6 +901,18 @@ trait ItersExp extends ScalanExp with ItersDsl {
         case _ => None
       }
     }
+
+    object fromRowidWhile {
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(rowid, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "fromRowidWhile" =>
+          Some((receiver, rowid, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
   }
 
   def mkTableIter[Row]

@@ -4,7 +4,7 @@ import java.lang.reflect.Method
 
 import scalan._
 import scala.reflect.runtime.universe._
-import scalan.sql.parser.SqlAST.{ComparisonOp, Index, SortDirection, Table}
+import scalan.sql.parser.SqlAST._
 
 trait Iters extends ScalanDsl {
   self: ItersDsl with ScalanSql =>
@@ -138,6 +138,8 @@ trait Iters extends ScalanDsl {
     // TODO as for uniqueValue above
     /** The first part of the result may not be accessed if the second is false */
     def uniqueValueByRowid(rowid: Rep[Rowid]): ROpt[Row] = delayInvoke
+
+    def fromRowidWhile(rowid: Rep[Rowid], takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
   }
 
   abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
@@ -319,7 +321,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "takeWhile" | "fromBeginning" | "fromKeyWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" | "uniqueByKey" | "uniqueByRowid" =>
+        case "filter" | "takeWhile" | "fromBeginning" | "fromKeyWhile" | "fromRowidWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" | "uniqueByKey" | "uniqueByRowid" =>
           val eRow = receiver.elem.asInstanceOf[IterElem[_, _]].eRow
           iterElement(eRow)
         case "map" =>
@@ -387,6 +389,17 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       tableIter.asRep[TableIter[a]].uniqueByRowid(value.asRep[Rowid])
     case CursorIterMethods.uniqueValueByKey(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value)))) =>
       tableIter.asRep[TableIter[a]].uniqueValueByRowid(value.asRep[Rowid])
+    case CursorIterMethods.fromKeyWhile(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value))), op, f, fakeDep) =>
+      val rowid0 = value.asRep[Rowid]
+      val rowid = op match {
+        case Eq | GreaterEq | LessEq | Is =>
+          rowid0
+        case Greater =>
+          rowid0 + rowidNum.fromInt(1)
+        case Less =>
+          rowid0 - rowidNum.fromInt(1)
+      }
+      tableIter.asRep[TableIter[a]].fromRowidWhile(rowid, f.asRep[a => Boolean], fakeDep)
 
     case ExpConditionalIter(Def(Const(b)), iter) =>
       if (b)
