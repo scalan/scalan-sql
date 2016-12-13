@@ -425,25 +425,23 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       }
     case IterMethods.filter(iter: RIter[a], Def(ConstantLambda(c))) =>
       conditionalIter(c, iter)
+    case IterMethods.filter(iter @ Def(dIter), f) =>
+      dIter match {
+        case IterMethods.takeWhile(_, g) if f == g =>
+          iter
+        case IterMethods.filter(iter1: RIter[a], g) =>
+          iter1.filter(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+        case _ => super.rewriteDef(d)
+      }
     case IterMethods.takeWhile(iter: RIter[a], Def(ConstantLambda(c))) =>
       conditionalIter(c, iter)
-    case IterMethods.filter(iter1 @ Def(IterMethods.takeWhile(iter, f)), g) if f == g =>
-      iter1
-    case IterMethods.takeWhile(iter1 @ Def(IterMethods.filter(iter, f)), g) if f == g =>
-      iter1
-    case IterMethods.filter(iter1 @ Def(IterMethods.filter(iter: RIter[a], f)), g) =>
-      if (f == g)
-        iter1
-      else {
-        implicit val eA: Elem[a] = iter.elem.eRow
-        iter.filter(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
-      }
-    case IterMethods.takeWhile(iter1 @ Def(IterMethods.takeWhile(iter: RIter[a], f)), g) =>
-      if (f == g)
-        iter1
-      else {
-        implicit val eA: Elem[a] = iter.elem.eRow
-        iter.takeWhile(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
+    case IterMethods.takeWhile(iter @ Def(dIter), f) =>
+      dIter match {
+        case IterMethods.filter(_, g) if f == g =>
+          iter
+        case IterMethods.takeWhile(iter1: RIter[a], g) =>
+          iter1.takeWhile(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+        case _ => super.rewriteDef(d)
       }
 
     // must be last rule for flatMap

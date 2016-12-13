@@ -283,25 +283,23 @@ trait RelationsDslExp extends impl.RelationsExp { self: ScalanSqlExp =>
         if (b) relation else super.rewriteDef(d) // emptyRelation(relation.elem.eRow)
 //    case RelationMethods.filter(relation: RRelation[a], Def(ConstantLambda(c))) =>
 //      conditionalRelation(c, relation)
+    case RelationMethods.filter(relation @ Def(dRelation), f) =>
+      dRelation match {
+//        case RelationMethods.takeWhile(_, g) if f == g =>
+//          relation
+        case RelationMethods.filter(relation1: RRelation[a], g) =>
+          relation1.filter(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+        case _ => super.rewriteDef(d)
+      }
 //    case RelationMethods.takeWhile(relation: RRelation[a], Def(ConstantLambda(c))) =>
 //      conditionalRelation(c, relation)
-//    case RelationMethods.filter(relation1 @ Def(RelationMethods.takeWhile(relation, f)), g) if f == g =>
-//      relation1
-//    case RelationMethods.takeWhile(relation1 @ Def(RelationMethods.filter(relation, f)), g) if f == g =>
-//      relation1
-    case RelationMethods.filter(relation1 @ Def(RelationMethods.filter(relation: RRelation[a], f)), g) =>
-      if (f == g)
-        relation1
-      else {
-        implicit val eA: Elem[a] = relation.elem.eRow
-        relation.filter(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
-      }
-//    case RelationMethods.takeWhile(relation1 @ Def(RelationMethods.takeWhile(relation: RRelation[a], f)), g) =>
-//      if (f == g)
-//        relation1
-//      else {
-//        implicit val eA: Elem[a] = relation.elem.eRow
-//        relation.takeWhile(fun { x: Rep[a] => f.asRep[a => Boolean](x) && g.asRep[a => Boolean](x) })
+//    case RelationMethods.takeWhile(relation @ Def(dRelation), f) =>
+//      dRelation match {
+//        case RelationMethods.filter(_, g) if f == g =>
+//          relation
+//        case RelationMethods.takeWhile(relation1: RRelation[a], g) =>
+//          relation1.takeWhile(f.asRep[a => Boolean] &&& g.asRep[a => Boolean])
+//        case _ => super.rewriteDef(d)
 //      }
 
 //    // must be last rule for flatMap
