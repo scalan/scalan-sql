@@ -427,9 +427,6 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           attributesToElem(allAttributesToReadFromIndex) match {
             case eIndexRow: Elem[indexRow] =>
               implicit val _: Elem[indexRow] = eIndexRow
-              val indexScannable =
-                IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eIndexRow)
-              val indexRelation0 = indexScannable.search(bounds)
 
               def usesAttributesOutsideIndex(x: Any): Boolean = x match {
                 case attr: ResolvedTableAttribute => usedAttributesOutsideIndex.contains(attr)
