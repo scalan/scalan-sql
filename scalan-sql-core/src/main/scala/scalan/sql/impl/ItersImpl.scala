@@ -152,8 +152,8 @@ trait ItersAbs extends Scalan with Iters {
     proxyOps[AtMostOneCompanionAbs](p)
 
   abstract class AbsTableIter[Row]
-      (table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
-    extends TableIter[Row](table, scanId, direction, fakeDep, kernelInput) with Def[TableIter[Row]] {
+      (table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
+    extends TableIter[Row](table, scanId, direction, kernelInput) with Def[TableIter[Row]] {
     lazy val selfType = element[TableIter[Row]]
   }
   // elem for concrete class
@@ -163,8 +163,8 @@ trait ItersAbs extends Scalan with Iters {
     override lazy val parent: Option[Elem[_]] = Some(cursorIterElement(element[Row]))
     override lazy val typeArgs = TypeArgs("Row" -> (eRow -> scalan.util.Invariant))
 
-    override def convertCursorIter(x: Rep[CursorIter[Row]]) = TableIter(x.table, x.scanId, x.direction, x.fakeDep, x.kernelInput)
-    override def getDefaultRep = TableIter(element[Table].defaultRepValue, 0, element[SortDirection].defaultRepValue, (), element[KernelInput].defaultRepValue)
+    override def convertCursorIter(x: Rep[CursorIter[Row]]) = TableIter(x.table, x.scanId, x.direction, x.kernelInput)
+    override def getDefaultRep = TableIter(element[Table].defaultRepValue, 0, element[SortDirection].defaultRepValue, element[KernelInput].defaultRepValue)
     override lazy val tag = {
       implicit val tagRow = eRow.tag
       weakTypeTag[TableIter[Row]]
@@ -172,18 +172,18 @@ trait ItersAbs extends Scalan with Iters {
   }
 
   // state representation type
-  type TableIterData[Row] = (Table, (Int, (SortDirection, (Unit, KernelInput))))
+  type TableIterData[Row] = (Table, (Int, (SortDirection, KernelInput)))
 
   // 3) Iso for concrete class
   class TableIterIso[Row](implicit eRow: Elem[Row])
     extends EntityIso[TableIterData[Row], TableIter[Row]] with Def[TableIterIso[Row]] {
     override def from(p: Rep[TableIter[Row]]) =
-      (p.table, p.scanId, p.direction, p.fakeDep, p.kernelInput)
-    override def to(p: Rep[(Table, (Int, (SortDirection, (Unit, KernelInput))))]) = {
-      val Pair(table, Pair(scanId, Pair(direction, Pair(fakeDep, kernelInput)))) = p
-      TableIter(table, scanId, direction, fakeDep, kernelInput)
+      (p.table, p.scanId, p.direction, p.kernelInput)
+    override def to(p: Rep[(Table, (Int, (SortDirection, KernelInput)))]) = {
+      val Pair(table, Pair(scanId, Pair(direction, kernelInput))) = p
+      TableIter(table, scanId, direction, kernelInput)
     }
-    lazy val eFrom = pairElement(element[Table], pairElement(element[Int], pairElement(element[SortDirection], pairElement(element[Unit], element[KernelInput]))))
+    lazy val eFrom = pairElement(element[Table], pairElement(element[Int], pairElement(element[SortDirection], element[KernelInput])))
     lazy val eTo = new TableIterElem[Row](self)
     lazy val selfType = new TableIterIsoElem[Row](eRow)
     def productArity = 1
@@ -205,8 +205,8 @@ trait ItersAbs extends Scalan with Iters {
     def apply[Row](p: Rep[TableIterData[Row]])(implicit eRow: Elem[Row]): Rep[TableIter[Row]] =
       isoTableIter(eRow).to(p)
     @scalan.OverloadId("fromFields")
-    def apply[Row](table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]] =
-      mkTableIter(table, scanId, direction, fakeDep, kernelInput)
+    def apply[Row](table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]] =
+      mkTableIter(table, scanId, direction, kernelInput)
 
     def unapply[Row](p: Rep[CursorIter[Row]]) = unmkTableIter(p)
   }
@@ -233,12 +233,12 @@ trait ItersAbs extends Scalan with Iters {
     reifyObject(new TableIterIso[Row]()(eRow))
 
   // 6) smart constructor and deconstructor
-  def mkTableIter[Row](table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]]
-  def unmkTableIter[Row](p: Rep[CursorIter[Row]]): Option[(Rep[Table], Rep[Int], Rep[SortDirection], Rep[Unit], Rep[KernelInput])]
+  def mkTableIter[Row](table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]]
+  def unmkTableIter[Row](p: Rep[CursorIter[Row]]): Option[(Rep[Table], Rep[Int], Rep[SortDirection], Rep[KernelInput])]
 
   abstract class AbsIndexIter[Row]
-      (table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
-    extends IndexIter[Row](table, index, scanId, direction, fakeDep, kernelInput) with Def[IndexIter[Row]] {
+      (table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
+    extends IndexIter[Row](table, index, scanId, direction, kernelInput) with Def[IndexIter[Row]] {
     lazy val selfType = element[IndexIter[Row]]
   }
   // elem for concrete class
@@ -250,7 +250,7 @@ trait ItersAbs extends Scalan with Iters {
 
     override def convertCursorIter(x: Rep[CursorIter[Row]]) = // Converter is not generated by meta
 !!!("Cannot convert from CursorIter to IndexIter: missing fields List(index)")
-    override def getDefaultRep = IndexIter(element[Table].defaultRepValue, element[Index].defaultRepValue, 0, element[SortDirection].defaultRepValue, (), element[KernelInput].defaultRepValue)
+    override def getDefaultRep = IndexIter(element[Table].defaultRepValue, element[Index].defaultRepValue, 0, element[SortDirection].defaultRepValue, element[KernelInput].defaultRepValue)
     override lazy val tag = {
       implicit val tagRow = eRow.tag
       weakTypeTag[IndexIter[Row]]
@@ -258,18 +258,18 @@ trait ItersAbs extends Scalan with Iters {
   }
 
   // state representation type
-  type IndexIterData[Row] = (Table, (Index, (Int, (SortDirection, (Unit, KernelInput)))))
+  type IndexIterData[Row] = (Table, (Index, (Int, (SortDirection, KernelInput))))
 
   // 3) Iso for concrete class
   class IndexIterIso[Row](implicit eRow: Elem[Row])
     extends EntityIso[IndexIterData[Row], IndexIter[Row]] with Def[IndexIterIso[Row]] {
     override def from(p: Rep[IndexIter[Row]]) =
-      (p.table, p.index, p.scanId, p.direction, p.fakeDep, p.kernelInput)
-    override def to(p: Rep[(Table, (Index, (Int, (SortDirection, (Unit, KernelInput)))))]) = {
-      val Pair(table, Pair(index, Pair(scanId, Pair(direction, Pair(fakeDep, kernelInput))))) = p
-      IndexIter(table, index, scanId, direction, fakeDep, kernelInput)
+      (p.table, p.index, p.scanId, p.direction, p.kernelInput)
+    override def to(p: Rep[(Table, (Index, (Int, (SortDirection, KernelInput))))]) = {
+      val Pair(table, Pair(index, Pair(scanId, Pair(direction, kernelInput)))) = p
+      IndexIter(table, index, scanId, direction, kernelInput)
     }
-    lazy val eFrom = pairElement(element[Table], pairElement(element[Index], pairElement(element[Int], pairElement(element[SortDirection], pairElement(element[Unit], element[KernelInput])))))
+    lazy val eFrom = pairElement(element[Table], pairElement(element[Index], pairElement(element[Int], pairElement(element[SortDirection], element[KernelInput]))))
     lazy val eTo = new IndexIterElem[Row](self)
     lazy val selfType = new IndexIterIsoElem[Row](eRow)
     def productArity = 1
@@ -291,8 +291,8 @@ trait ItersAbs extends Scalan with Iters {
     def apply[Row](p: Rep[IndexIterData[Row]])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]] =
       isoIndexIter(eRow).to(p)
     @scalan.OverloadId("fromFields")
-    def apply[Row](table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]] =
-      mkIndexIter(table, index, scanId, direction, fakeDep, kernelInput)
+    def apply[Row](table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]] =
+      mkIndexIter(table, index, scanId, direction, kernelInput)
 
     def unapply[Row](p: Rep[CursorIter[Row]]) = unmkIndexIter(p)
   }
@@ -319,8 +319,8 @@ trait ItersAbs extends Scalan with Iters {
     reifyObject(new IndexIterIso[Row]()(eRow))
 
   // 6) smart constructor and deconstructor
-  def mkIndexIter[Row](table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]]
-  def unmkIndexIter[Row](p: Rep[CursorIter[Row]]): Option[(Rep[Table], Rep[Index], Rep[Int], Rep[SortDirection], Rep[Unit], Rep[KernelInput])]
+  def mkIndexIter[Row](table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]]
+  def unmkIndexIter[Row](p: Rep[CursorIter[Row]]): Option[(Rep[Table], Rep[Index], Rep[Int], Rep[SortDirection], Rep[KernelInput])]
 
   abstract class AbsSingletonIter[Row]
       (value: Rep[Row])(implicit eRow: Elem[Row])
@@ -594,30 +594,30 @@ trait ItersStd extends ScalanStd with ItersDsl {
   }
 
   case class StdTableIter[Row]
-      (override val table: Rep[Table], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val fakeDep: Rep[Unit], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
-    extends AbsTableIter[Row](table, scanId, direction, fakeDep, kernelInput) {
+      (override val table: Rep[Table], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
+    extends AbsTableIter[Row](table, scanId, direction, kernelInput) {
   }
 
   def mkTableIter[Row]
-    (table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]] =
-    new StdTableIter[Row](table, scanId, direction, fakeDep, kernelInput)
+    (table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]] =
+    new StdTableIter[Row](table, scanId, direction, kernelInput)
   def unmkTableIter[Row](p: Rep[CursorIter[Row]]) = p match {
     case p: TableIter[Row] @unchecked =>
-      Some((p.table, p.scanId, p.direction, p.fakeDep, p.kernelInput))
+      Some((p.table, p.scanId, p.direction, p.kernelInput))
     case _ => None
   }
 
   case class StdIndexIter[Row]
-      (override val table: Rep[Table], override val index: Rep[Index], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val fakeDep: Rep[Unit], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
-    extends AbsIndexIter[Row](table, index, scanId, direction, fakeDep, kernelInput) {
+      (override val table: Rep[Table], override val index: Rep[Index], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
+    extends AbsIndexIter[Row](table, index, scanId, direction, kernelInput) {
   }
 
   def mkIndexIter[Row]
-    (table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]] =
-    new StdIndexIter[Row](table, index, scanId, direction, fakeDep, kernelInput)
+    (table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]] =
+    new StdIndexIter[Row](table, index, scanId, direction, kernelInput)
   def unmkIndexIter[Row](p: Rep[CursorIter[Row]]) = p match {
     case p: IndexIter[Row] @unchecked =>
-      Some((p.table, p.index, p.scanId, p.direction, p.fakeDep, p.kernelInput))
+      Some((p.table, p.index, p.scanId, p.direction, p.kernelInput))
     case _ => None
   }
 
@@ -714,18 +714,6 @@ trait ItersExp extends ScalanExp with ItersDsl {
       }
     }
 
-    object fakeDep {
-      def unapply(d: Def[_]): Option[Rep[CursorIter[Row]] forSome {type Row}] = d match {
-        case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fakeDep" =>
-          Some(receiver).asInstanceOf[Option[Rep[CursorIter[Row]] forSome {type Row}]]
-        case _ => None
-      }
-      def unapply(exp: Exp[_]): Option[Rep[CursorIter[Row]] forSome {type Row}] = exp match {
-        case Def(d) => unapply(d)
-        case _ => None
-      }
-    }
-
     object kernelInput {
       def unapply(d: Def[_]): Option[Rep[CursorIter[Row]] forSome {type Row}] = d match {
         case MethodCall(receiver, method, _, _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "kernelInput" =>
@@ -738,13 +726,25 @@ trait ItersExp extends ScalanExp with ItersDsl {
       }
     }
 
-    object fromKeyWhile {
-      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean]) forSome {type Row}] = d match {
-        case MethodCall(receiver, method, Seq(keyValues, operation, takeWhilePred, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fromKeyWhile" =>
-          Some((receiver, keyValues, operation, takeWhilePred)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean]) forSome {type Row}]]
+    object fromBeginning {
+      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[_$1] forSome {type _$1}) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(fakeDep, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fromBeginning" =>
+          Some((receiver, fakeDep)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[_$1] forSome {type _$1}) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean]) forSome {type Row}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[_$1] forSome {type _$1}) forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
+    object fromKeyWhile {
+      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$2] forSome {type _$2}) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(keyValues, operation, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fromKeyWhile" =>
+          Some((receiver, keyValues, operation, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$2] forSome {type _$2}) forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$2] forSome {type _$2}) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
@@ -862,8 +862,8 @@ trait ItersExp extends ScalanExp with ItersDsl {
   }
 
   case class ExpTableIter[Row]
-      (override val table: Rep[Table], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val fakeDep: Rep[Unit], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
-    extends AbsTableIter[Row](table, scanId, direction, fakeDep, kernelInput)
+      (override val table: Rep[Table], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
+    extends AbsTableIter[Row](table, scanId, direction, kernelInput)
 
   object TableIterMethods {
     object byRowids {
@@ -904,28 +904,28 @@ trait ItersExp extends ScalanExp with ItersDsl {
   }
 
   def mkTableIter[Row]
-    (table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]] =
-    new ExpTableIter[Row](table, scanId, direction, fakeDep, kernelInput)
+    (table: Rep[Table], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[TableIter[Row]] =
+    new ExpTableIter[Row](table, scanId, direction, kernelInput)
   def unmkTableIter[Row](p: Rep[CursorIter[Row]]) = p.elem.asInstanceOf[Elem[_]] match {
     case _: TableIterElem[Row] @unchecked =>
-      Some((p.asRep[TableIter[Row]].table, p.asRep[TableIter[Row]].scanId, p.asRep[TableIter[Row]].direction, p.asRep[TableIter[Row]].fakeDep, p.asRep[TableIter[Row]].kernelInput))
+      Some((p.asRep[TableIter[Row]].table, p.asRep[TableIter[Row]].scanId, p.asRep[TableIter[Row]].direction, p.asRep[TableIter[Row]].kernelInput))
     case _ =>
       None
   }
 
   case class ExpIndexIter[Row]
-      (override val table: Rep[Table], override val index: Rep[Index], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val fakeDep: Rep[Unit], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
-    extends AbsIndexIter[Row](table, index, scanId, direction, fakeDep, kernelInput)
+      (override val table: Rep[Table], override val index: Rep[Index], override val scanId: Rep[Int], override val direction: Rep[SortDirection], override val kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row])
+    extends AbsIndexIter[Row](table, index, scanId, direction, kernelInput)
 
   object IndexIterMethods {
   }
 
   def mkIndexIter[Row]
-    (table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], fakeDep: Rep[Unit], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]] =
-    new ExpIndexIter[Row](table, index, scanId, direction, fakeDep, kernelInput)
+    (table: Rep[Table], index: Rep[Index], scanId: Rep[Int], direction: Rep[SortDirection], kernelInput: Rep[KernelInput])(implicit eRow: Elem[Row]): Rep[IndexIter[Row]] =
+    new ExpIndexIter[Row](table, index, scanId, direction, kernelInput)
   def unmkIndexIter[Row](p: Rep[CursorIter[Row]]) = p.elem.asInstanceOf[Elem[_]] match {
     case _: IndexIterElem[Row] @unchecked =>
-      Some((p.asRep[IndexIter[Row]].table, p.asRep[IndexIter[Row]].index, p.asRep[IndexIter[Row]].scanId, p.asRep[IndexIter[Row]].direction, p.asRep[IndexIter[Row]].fakeDep, p.asRep[IndexIter[Row]].kernelInput))
+      Some((p.asRep[IndexIter[Row]].table, p.asRep[IndexIter[Row]].index, p.asRep[IndexIter[Row]].scanId, p.asRep[IndexIter[Row]].direction, p.asRep[IndexIter[Row]].kernelInput))
     case _ =>
       None
   }
@@ -1477,7 +1477,7 @@ trait ItersExp extends ScalanExp with ItersDsl {
 }
 
 object Iters_Module extends scalan.ModuleInfo {
-  val dump = "H4sIAAAAAAAAAN1YTWwbRRQeO3Ycx0kbgtoGQUQILrQF7IgKFRQhlMYOuDg/yiYtpFXReHecbjM7u9kdOzaHcqsE3BDigMShCMSlqoS4IJC4ABJCqAeunJGKWqqqQlRCAvFm9sfrkHXb/EgRPozWM2/fz/fe92ZmL/+Oko6NnnBUTDHLGYTjnCKfJxyeVYqM67w5bWo1SgqkevaVj/86bbx9II4GllD3OewUHLqE0u5DsWEFzwrXyiiNmUocbtoOR4+VpYW8alJKVK6bLK8bRo3jCiX5su7w8TJKVEytuYouoFgZDagmU23CiTJJseMQx5vvIcIjPfiflv+bs1bLBsuLKPKhKBZsrHNwH2wMuPLzxFKazGRNg6M9nmuzlnALZDKkYUEMJcOi0kxXGaV0wzJt7ltNgYVzpub/TTAME2iwfB7XcR6sLucVbutsWSizsLqCl8kMiAjxBMTgEFpdaFrEU55xuNZmr2EhhCArz0rHci3McgFmOYFZViG2jqn+JhaLc7bZaCL3F+tCqGGBiqfvosLXQIpMy75zRj19R8kYcfFyQ7iSkg51g6JHIypEpgew/WH+Pef2y5eOxVHvEurVnYmKw22s8nAZeHBlMGMmlz4HCGJ7GTI4GpVBaWUCZNaVSVo1DQsz0ORh2QeJorqqcyEs5vq89ERgn+IW8UVjDSsWxDsSEa+spUlM6dz1h545eKP4WhzF202kQaUCZLB9pRz1TtZsx7RLnNieATHu5ahr3lyTOIsh3WiNqQ4uBGA8ef2m9v0YOhMPIPQs3lvWQMXg8x9+dZDMXYmjniVZ5FMUL8v8CYwKxFGXUI9ZJ7Y7n6pjKp42zGFKI1Vco9xDNgxJF0DC0UgkPy0i8BqXdR/zw8+4pTtjMpKdmsv+qfz4/mVRmTbqc1dcwv6jH/v7lz1VLouWo6Ss7Ra+xGpHPLkg1kOYy4WhwLAYhjnIq5iVtA302OjxqNKwyJytG9Ce6uS5b79evPXNTFJWx6CHzElMa8TtDB4wLZCE77ExsFRivJNjaU23XSZHx9ivQK8q+HJ3jTVVxSuQaytC4WGO4odgSCwyvaNrmRViM0JLzKrxaOcyr7akNi59qU6K7wu9OhRbZy5BgDy+1kSREuMeuAUAygIQVGzZEVkdjs4qEOX1G1pu6ObwWhx1n0DJKnDAKaNkxawxze88sGNx0uDH/blYOweg02AbG8FGVsfQeaEzcrTf50WN6zR/0pt32QC/ESQdlaGEogKX93sui/dyJeZq5Nmnvry8pl89PCUZEUpYJtYO0Ga60n+ysr4Itol/SZ1ppNFBTUmsb57GYjiya3gmhhf+B9SSSVlPLTHOdCxlMSgdCjU9wadNh88yso11WhfNOBrLaN07i2G/ArsDJdxkuwfHYG2n66doWLy5/XEntrfFwaGTaXqH1gCbZbKKqQO9PXXcNCnBrBO5eyrYIYGLornN34/DO5uTvZN+sJhuKTMhBDqdTP272ucXL+679ckbD8r7RE9F5wa2smP3cZsQz307e1tA6xAEtzdfeBGMA6h63eOuYhrkgdHb+tlL73J54o812u+cs5XzsBONSz2PSD3XUEjRRlSGQ2e/8HEyDIybRctzf2tUvIY2j0iky6GDyy70rtVlt8gVMf7W0vEHlEIugjUFolJsE018QyAGYR4fjn7w0qkTQ6cWZbn0aVLIXQluYxt/kZnG1rj8fnCow/cDEMrKji0ejn734s9v/fTZp8GhM+XFl5SYcq+KWc5ZpUE4oxHhKB7tgFAX7nw0c+TqF7/Ki1SvIDDcB1nwJSZ8gWpPXI+0W3BoK1liC3StKKs0lFRIvCC65xaMsQNiePhfLrmQIB0TAAA="
+  val dump = "H4sIAAAAAAAAAO1YTWwbRRQeO3Yc20kaglqCREQILtACdkSFihQhlMYOuHV+lE1bSKui8e443XZ2drM7TmwO5VYJuCHEAYlDEYhLhIR6QSBxASSEUA9cwxVxaKmqHqiEBOLN7I/Xweu2+ZF6wIfR7Mzb9/O9772d8cYfKOnY6ClHxRSzvEE4zityPuXwnFJiXOfNWVOrU1IktXOvffLXGeOdR+JoaBn1nsdO0aHLKO1OSg0rmCtcq6A0ZipxuGk7HD1RkRYKqkkpUblusoJuGHWOq5QUKrrDJysoUTW15iq6hGIVNKSaTLUJJ8o0xY5DHG+9jwiP9OA5LZ+b81bLBiuIKAqhKJZsrHNwH2wMufKLxFKazGRNg6NBz7V5S7gFMlnSsCCGsmFRaaanglK6YZk2962mwMJ5U/MfEwzDAhquXMBruABWVwoKt3W2IpRZWL2IV8gciAjxBMTgEFpbalrEU551uNZmr2EhhCArL0jH8i3M8gFmeYFZTiG2jqn+FhabC7bZaCL3F+tBqGGBiufuosLXQEpMy717Vj1zR8kacfFyQ7iSkg71gqLHIxgi0wPY/rj4vnP71StH4yizjDK6M1V1uI1VHqaBB1cWM2Zy6XOAILZXIIPjURmUVqZAZgtN0qppWJiBJg/LfkgU1VWdC2Gx1u+lJwL7FLeILxprWLEg3rGIeCWXpjGlC9cfff7gjdLrcRRvN5EGlQoUg+0r5SgzXbcd0y5zYnsGxLiPo55Fc13iLIZ0ozWmurgQgPH09ZvaDxPobDyA0LN4b1kDFcMvffT1QbLwRRz1LUuSz1C8IvMnMCoSR11GfeYasd311BqmYtYxhymN1HCdcg/ZMCQ9AAlHY5H1aRGB16TkfcwPP+tSd85kJDezkPtT+emDDcFMG/W7O27B/qMf/XtzsMYlaTlKSm638CVWO+LJJbEfwlxujASGxTDKQV7FrKx10GOjJ6OoYZEFWzegPa2RF7/75uStb+eSkh3DHjKnMK0TtzN4wLRAEr7HJsBSmfFujqU13XYrOTrGAQV6VdGXu2us2YvEZoSWmVXn0UqzJ1pSnSkr1Unx/aFXR2JbzCUIkN7XmihRYtxDTUDgMnGihFp2RDZGo7MBBH/jhpYfuTm6Hke9x1GyBtx1KihZNetM8zsGfGk4afBj/lqsnbvQIbCNjeADtIahY0JH4+iAz+c612nhlLfushh+Y0g6KkMJRQUuH/BcFu/ly8zVyHPPfrWxrl87NCOZHEpYNtYO0Ha6yX+yspUEu1Q3SZ1ppNFFTVnsb7/8xHD4//roVB8S2a31IcaZrnwUw4kubEtP8VnT4fOM7CLZ1kQnjMYyWvfeYjigQGumhJvswcEx2Ntr/pQMizd3P+7E7vYpOPExTe9S34eAXjVMHWjQqWOmSQlm3Yq7r4odErgoOtTi/Ti8tznZN+0Hi+mOMhNCoNux0L8ofXn58v5bn775sDzM91V1bmArN3EfR3kx79/bozragiC4vX3iRVQcQJVxz5qKaZCHxm/r5668x+VxO9Zov/DNVy/A52RS6nlM6tlEIUWdShlOfAPCx+kwMG4WLc/9nZXiJto+IpEuh04fD6B3rS67w1oR468tHb8DFfIRVVMkKsU20cQFnhiEefVw5MNXTh8fOX1S0qVfk0LuTnAV6vx3yCy2JuXl/Zkul3cQysmOLSZHvn/5l7d//vyz4OSY8uJLSky5x2KWd1ZpEM54RDiKV3ZQUJfufDx3+NrV3+QtJiMKGC5jLPgbJHx7aU9cn7RbdGgrWeIT6FpRVmkoqZB4UeieWzDGMmIY/BdpphYRmhIAAA=="
 }
 }
 

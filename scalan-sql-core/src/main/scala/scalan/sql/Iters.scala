@@ -108,10 +108,10 @@ trait Iters extends ScalanDsl {
     def table: Rep[Table]
     def scanId: Rep[Int]
     def direction: Rep[SortDirection]
-    def fakeDep: Rep[Unit]
     def kernelInput: Rep[KernelInput]
 
-    def fromKeyWhile(keyValues: Rep[Array[Any]], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean]): RIter[Row] = delayInvoke
+    def fromBeginning(fakeDep: Rep[_]): RIter[Row] = delayInvoke
+    def fromKeyWhile(keyValues: Rep[Array[Any]], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
 
     // if there are cases where value is guaranteed to exist, add argument for this
     // I don't think there are any at the moment
@@ -129,7 +129,7 @@ trait Iters extends ScalanDsl {
     def uniqueValueByKey(keyValues: Rep[Array[Any]]): ROpt[Row] = delayInvoke
   }
 
-  abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
+  abstract class TableIter[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row] {
     def byRowids[B](iter: RIter[B], f: Rep[B => Rowid]): RIter[Row] = delayInvoke
 
     // see comments for CursorIter#uniqueByKey
@@ -140,7 +140,7 @@ trait Iters extends ScalanDsl {
     def uniqueValueByRowid(rowid: Rep[Rowid]): ROpt[Row] = delayInvoke
   }
 
-  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
+  abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
 
   trait AtMostOne[Row] extends Iter[Row] {
     def eRow: Elem[Row]
@@ -319,7 +319,7 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "takeWhile" | "fromKeyWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" | "uniqueByKey" | "uniqueByRowid" =>
+        case "filter" | "takeWhile" | "fromBeginning" | "fromKeyWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" | "uniqueByKey" | "uniqueByRowid" =>
           val eRow = receiver.elem.asInstanceOf[IterElem[_, _]].eRow
           iterElement(eRow)
         case "map" =>
@@ -528,6 +528,10 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       iter.uniqueByRowid(f.asRep[a => Rowid](value))
     case TableIterMethods.byRowids(iter, Def(ExpConditionalIter(c, baseIter: RIter[a] @unchecked)), f) =>
       conditionalIter(c, iter.byRowids(baseIter, f.asRep[a => Rowid]))
+
+    case CursorIterMethods.fromBeginning(cursorIter, fakeDep) if fakeDep == cursorIter.kernelInput =>
+      // if fakeDep is kernelInput, we are in the top level function, and cursor is already at beginning when created
+      cursorIter
 
     case _ => super.rewriteDef(d)
   }

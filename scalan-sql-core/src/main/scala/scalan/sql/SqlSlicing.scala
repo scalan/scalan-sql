@@ -86,8 +86,11 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
         case IterMethods.takeWhile(xs: RIter[a], f) =>
           filterLike(xs, f.asRep[a => Boolean])
 
-        case CursorIterMethods.fromKeyWhile(xs: RIter[a] @unchecked, _, _, f) =>
+        case CursorIterMethods.fromKeyWhile(xs: RIter[a] @unchecked, _, _, f, _) =>
           filterLike(xs, f.asRep[a => Boolean])
+
+        case CursorIterMethods.fromBeginning(xs: RIter[a] @unchecked, _) =>
+          Seq[MarkedSym](xs.marked(outMark.asMark[Iter[a]]))
 
         case IterMethods.mapReduce(_xs: RIter[a] @unchecked, _mapKey: RFunc[_, k], _packKey, _newValue: Th[v] @unchecked, _reduce) => outMark match {
           case IterMarking(_, mKeyVal: StructMarking[_]) =>
@@ -256,10 +259,14 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
       Sliced(xs.takeWhile(sp), im.asMark[Iter[a]])
 
     case CursorIterMethods.fromKeyWhile(
-    IsSliced(xs: Rep[CursorIter[s]] @unchecked, im @ IterMarking(All, mA: SliceMarking[a])), keyValues, op, _p) =>
+    IsSliced(xs: Rep[CursorIter[s]] @unchecked, im @ IterMarking(All, mA: SliceMarking[a])), keyValues, op, _p, fakeDep) =>
       val p = _p.asRep[a => Boolean]
       val sp = sliceIn(p, mA).asRep[s => Boolean]
-      Sliced(xs.fromKeyWhile(keyValues, op, sp), im.asMark[Iter[a]])
+      Sliced(xs.fromKeyWhile(keyValues, op, sp, fakeDep), im.asMark[Iter[a]])
+
+    case CursorIterMethods.fromBeginning(
+    IsSliced(xs: Rep[CursorIter[s]] @unchecked, im @ IterMarking(All, mA: SliceMarking[a])), fakeDep) =>
+      Sliced(xs.fromBeginning(fakeDep), im.asMark[Iter[a]])
 
     case IterMethods.map(
     IsSliced(_xs, IterMarking(All, mA: SliceMarking[a])),

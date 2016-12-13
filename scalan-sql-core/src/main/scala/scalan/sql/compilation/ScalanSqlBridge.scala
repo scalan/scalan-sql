@@ -87,10 +87,10 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
       val FULL_SCAN_COST = 500.0
       val costs = graph.scheduleAll.iterator.map {
         te => te.rhs match {
-          case ScannableMethods.fullScan(_) =>
+          case ScannableMethods.fullScan(_, _) =>
             // sequential scan, relatively cheap
             FULL_SCAN_COST
-          case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds) =>
+          case IndexScannableMethods.search(Def(is: IndexScannable[_] @unchecked), bounds, _) =>
             // one or zero seeks + partial scan
             val index = is.index.asValue
             val proportion = bounds.fixedValues.length.toDouble / index.columns.length.toDouble
@@ -241,8 +241,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
 
   def generateScan(scan: Scan, filter: Option[Expression], inputs: ExprInputs): Plans[_] = {
-    val currentLambdaArg = this.currentLambdaArg(inputs)
-    val fakeDep = extraDeps(currentLambdaArg)
+    val fakeDep = this.currentLambdaArg(inputs)
 
     val tableName = scan.tableName
     val table = resolver.table(tableName)
@@ -287,8 +286,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     }
 
     val tableScannable =
-      TableScannable(table, scanId, Ascending: SortDirection, fakeDep, inputs.kernelInput)(eUsedAttributes)
-    val tableRelation = tableScannable.fullScan()
+      TableScannable(table, scanId, Ascending: SortDirection, inputs.kernelInput)(eUsedAttributes)
+    val tableRelation = tableScannable.fullScan(fakeDep)
     val tableScanUnfilteredPlan = Plan(tableRelation, ConstraintSet.empty, tableScanOrdering(table, scanId))
     val tablePlan = filterByClauses(tableScanUnfilteredPlan, filterClauses)
 
@@ -416,8 +415,8 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
           usedAttributes.partition(attr => columnNames.contains(attr.name))
 
         def planFromBounds[A](eRow: Elem[A]) = {
-          val scannable = IndexScannable(table, index, scanId, direction, fakeDep, inputs.kernelInput)(eRow)
-          val searchRelation = scannable.search(bounds)
+          val scannable = IndexScannable(table, index, scanId, direction, inputs.kernelInput)(eRow)
+          val searchRelation = scannable.search(bounds, fakeDep)
           Plan(searchRelation, constraintsFromBounds, indexScanOrdering)
         }
 

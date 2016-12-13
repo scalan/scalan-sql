@@ -15,11 +15,11 @@ trait Scannables extends ScalanDsl {
 
     def sourceIter(): Rep[CursorIter[Row]]
 
-    def fullScan(): RRelation[Row] = IterBasedRelation(sourceIter())(eRow)
+    def fullScan(fakeDep: Rep[_]): RRelation[Row] = IterBasedRelation(sourceIter().fromBeginning(fakeDep))(eRow)
   }
 
-  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    override def sourceIter() = TableIter(table, scanId, direction, fakeDep, kernelInput)
+  abstract class TableScannable[Row](val table: Rep[Table], val scanId: Rep[Int], val direction: Rep[SortDirection], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+    override def sourceIter() = TableIter(table, scanId, direction, kernelInput)
 
     def byRowids[B](relation: RRelation[B], f: Rep[B => Rowid]): RRelation[Row] = {
       val iter = sourceIter().byRowids(relation.iter, f)
@@ -27,11 +27,11 @@ trait Scannables extends ScalanDsl {
     }
   }
 
-  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val fakeDep: Rep[Unit], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
-    override def sourceIter() = IndexIter(table, index, scanId, direction, fakeDep, kernelInput)
+  abstract class IndexScannable[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends Scannable[Row] {
+    override def sourceIter() = IndexIter(table, index, scanId, direction, kernelInput)
 
     // FIXME assumes all columns in index are ASC
-    def search(bounds: SearchBounds): RRelation[Row] = {
+    def search(bounds: SearchBounds, fakeDep: Rep[_]): RRelation[Row] = {
       val index0 = index.asValue
       val fixedValues = bounds.fixedValues
 
@@ -80,9 +80,9 @@ trait Scannables extends ScalanDsl {
 
         if (keyValues.nonEmpty) {
           val repKeyValues = keyArray(keyValues)
-          sourceIter().fromKeyWhile(repKeyValues, startOp, test)
+          sourceIter().fromKeyWhile(repKeyValues, startOp, test, fakeDep)
         } else
-          sourceIter().takeWhile(test)
+          sourceIter().fromBeginning(fakeDep).takeWhile(test)
       }
       // if bounds.isEmpty this is the same as fullScan()
       IterBasedRelation(iter)
