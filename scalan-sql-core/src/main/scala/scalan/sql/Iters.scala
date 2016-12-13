@@ -380,6 +380,13 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   }
 
   override def rewriteDef[T](d: Def[T]): Exp[_] = (d: @unchecked) match {
+    case ii @ ExpIndexIter(table, index, scanId, direction, kernelInput) if isIntegerPkIndex(index.asValue, table.asValue) =>
+      TableIter(table, scanId, direction, kernelInput)(ii.eRow)
+
+    case CursorIterMethods.uniqueByKey(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value)))) =>
+      tableIter.asRep[TableIter[a]].uniqueByRowid(value.asRep[Rowid])
+    case CursorIterMethods.uniqueValueByKey(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value)))) =>
+      tableIter.asRep[TableIter[a]].uniqueValueByRowid(value.asRep[Rowid])
 
     case ExpConditionalIter(Def(Const(b)), iter) =>
       if (b)
