@@ -116,6 +116,44 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
       // must be a full (non-covering) reverse index scan, no sorting
       testQuery("select c_name, c_custkey, c_address from customer order by c_name desc")
     }
+
+    it("with a join") {
+      testQuery(
+        """select sum(l_linenumber + o_custkey)
+          |from orders join lineitem
+          |on l_orderkey = o_orderkey
+          |where o_custkey < 1000 and o_totalprice < 10000.0
+          |group by o_custkey
+          |order by o_custkey
+        """.stripMargin)
+    }
+
+    it("with a join inverted") {
+      testQuery(
+        """select sum(l_linenumber + o_custkey)
+          |from orders join lineitem
+          |on l_orderkey = o_orderkey
+          |where o_custkey < 1000 and o_totalprice < 10000.0
+          |group by o_custkey
+          |order by o_custkey desc
+        """.stripMargin)
+    }
+  }
+
+  describe("vacuous order by") {
+    // queries where results have at most one row and so shouldn't contain sort
+    it("join and aggregate") {
+      pendingUntilFixed {
+        // there is currently a resolution error
+        testQuery(
+          """select sum(l_linenumber + o_custkey)
+            |from orders join lineitem
+            |on l_orderkey = o_orderkey
+            |where o_custkey < 1000 and o_totalprice < 10000.0
+            |order by o_custkey
+          """.stripMargin)
+      }
+    }
   }
 
   describe("partial sorting") {

@@ -189,9 +189,14 @@ class SqlResolver(val schema: Schema) {
       withContext(parent1) {
         if (columns.exists(containsAggregates)) {
           val out1 = resolveAggregates(parent1, Nil, columns, inputs)
-          // TODO what should be done if this condition fails? Can it fail?
-          assert(out1.optProjection.isEmpty || out1.optProjection == optProj1)
-          ResolutionOutput(out1.op, optProj1)
+          val optProj2 = out1.optProjection
+          (optProj1, optProj2) match {
+            case (Some(proj1), Some(proj2)) if proj1 != proj2 =>
+              // TODO is this case actually possible? If yes, how to handle it?
+              throw new SqlException(s"Unexpected result while resolving SELECT with aggregates: proj1 = $proj1; proj2 = $proj2")
+            case _ =>
+              ResolutionOutput(out1.op, optProj1.orElse(optProj2))
+          }
         }
         else
           resolveNonAggregateProjectionWithResolvedParent(parent1, columns, inputs)
