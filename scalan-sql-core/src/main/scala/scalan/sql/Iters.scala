@@ -82,7 +82,7 @@ trait Iters extends ScalanDsl {
     def partialSort(prefixComparator: Rep[((Row, Row)) => Boolean], suffixComparator: Rep[((Row, Row)) => Boolean]): RIter[Row] =
       delayInvoke
 
-    // if `leftIsOuter` is true, `other` will be hashed; otherwise, `this` will be
+    // when adding joinType make sure hasAtMostOneRow checks it's Inner
     def join[B, Key](other: RIter[B], thisKey: Rep[Row => Key], otherKey: Rep[B => Key], cloneOther: Rep[B => B]/*, joinType: JoinType*/): RIter[(Row, B)] = delayInvoke
 
     def toArray: Arr[Row] = delayInvoke
@@ -371,6 +371,36 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       super.getResultElem(receiver, m, args)
   }
 
+  def hasAtMostOneRow(dIterOrRelation: Def[_]): Boolean = dIterOrRelation match {
+    case _: SingletonIter[_] | _: EmptyIter[_] =>
+      true
+    case IterMethods.reduce(_, _, _) =>
+      true
+    case MethodCall(_, m, _, _) if m.getName.startsWith("uniqueBy") =>
+      true
+    // TODO add case for unique Scannable#search (maybe it should be a separate method)
+    case MethodCall(iterOrRelation, m, _, _) if {
+      val name = m.getName
+      name == "map" || name == "filter" || name == "takeWhile" || name == "mapReduce" ||
+        name == "partialMapReduce"
+    } =>
+      hasAtMostOneRow(iterOrRelation)
+    case ExpConditionalIter(_, iterOrRelation) =>
+      hasAtMostOneRow(iterOrRelation)
+    case IterMethods.join(iterOrRelation1, iterOrRelation2, _, _, _) =>
+      hasAtMostOneRow(iterOrRelation1) && hasAtMostOneRow(iterOrRelation2)
+    // this case could go into Relations.scala, but no point splitting like this
+    case RelationMethods.hashJoin(iterOrRelation1, iterOrRelation2, _, _, _) =>
+      hasAtMostOneRow(iterOrRelation1) && hasAtMostOneRow(iterOrRelation2)
+    case _ => false
+  }
+
+  def hasAtMostOneRow(iterOrRelation: Exp[_]): Boolean = iterOrRelation match {
+    case Def(dIterOrRelation) =>
+      hasAtMostOneRow(dIterOrRelation)
+    case _ => false
+  }
+
   // hacky, but should be equivalent to building the lambda using `fun` as normal
   def copyLambda[A, B, C](l: Lambda[A, B], v: Rep[C]): Rep[A => C] = {
     val x = l.x
@@ -543,6 +573,13 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
 
         case _ => super.rewriteDef(d)
       }
+
+    case MethodCall(receiver, m, _, _) if {
+      val name = m.getName
+      (name == "sort" || name == "sortBy" || name == "partialSort") &&
+        hasAtMostOneRow(receiver)
+    } =>
+      receiver
 
     case TableIterMethods.byRowids(iter, Def(ExpSingletonIter(value: Rep[a])), f) =>
       iter.uniqueByRowid(f.asRep[a => Rowid](value))

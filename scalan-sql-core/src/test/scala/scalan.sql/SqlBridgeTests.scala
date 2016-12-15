@@ -154,6 +154,12 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
 
   describe("vacuous order by") {
     // queries where results have at most one row and so shouldn't contain sort
+    it("rowid") {
+      // TODO currently o_custkey is read from the table even though it won't be used in the end,
+      // but fixing this is non-trivial and low priority
+      testQuery("SELECT o_totalprice FROM orders WHERE o_orderkey = 1000 ORDER BY o_custkey")
+    }
+
     it("join and aggregate") {
       pendingUntilFixed {
         // there is currently a resolution error
