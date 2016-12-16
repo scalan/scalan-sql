@@ -192,6 +192,13 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
       c.name
   }.orElse(implicitRowidColumnName(table))
 
+  // TODO also SQLite-specific
+  // if table has rowid (even implicit), it's the real key of b-tree
+  def keyColumnNames(table: Table) = if (table.withoutRowId)
+    table.primaryKey
+  else
+    rowidColumn(table).toList
+
   def isIntegerPkIndex(index: Index, table: Table) = {
     index.isPrimaryKey && index.columns.length == 1 && {
       val column = index.columns.head

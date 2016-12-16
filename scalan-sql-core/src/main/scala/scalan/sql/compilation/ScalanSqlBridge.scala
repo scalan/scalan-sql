@@ -275,12 +275,7 @@ class ScalanSqlBridge[+S <: ScalanSqlExp](ddl: String, val scalan: S) {
     val tableScanUnfilteredPlan = Plan(tableRelation, ConstraintSet.empty, tableScanOrdering(table, scanId))
     val tablePlan = filterByClauses(tableScanUnfilteredPlan, filterClauses)
 
-    // if table has rowid (even implicit), it's the real key of b-tree
-    val realKeyColumnNames =
-      if (table.withoutRowId)
-        table.primaryKey
-      else
-        scalan.rowidColumn(table).toList
+    val realKeyColumnNames = scalan.keyColumnNames(table)
 
     val indexPlans = allIndices.flatMap { index =>
       val columns = {
