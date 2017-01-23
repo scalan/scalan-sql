@@ -117,6 +117,10 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
         case (_, eR: RelationElem[b, _]) =>
           val r1 = r.asRep[Relation[b]].onlyValue()
           widen(l, r1)
+        case (AnyElement, _) =>
+          LRHS(l, r, AnyElement)
+        case (_, AnyElement) =>
+          LRHS(l, r, AnyElement)
         case (DoubleElement, _) =>
           implicit val numR = getNumeric(eR)
           LRHS(l.asRep[Double], r.toDouble, DoubleElement)
@@ -175,7 +179,7 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
 
   def comparisonOp[A, B](op: ComparisonOp, l: Rep[A], r: Rep[B]): Rep[Boolean] = op match {
     case Eq | Is =>
-      ordOp(l, r)((_, _) => Equals())
+      Equals()(l, r)
     case Less =>
       ordOp(l, r)((ord, _) => OrderingLT(ord))
     case LessEq =>

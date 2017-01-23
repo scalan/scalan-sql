@@ -248,6 +248,20 @@ abstract class AbstractSqlBridgeTests extends BaseNestedTests {
     }
   }
 
+  describe("? bind parameters work") {
+    it("single parameter") {
+      testQuery("SELECT * FROM customer WHERE c_custkey = ?")
+    }
+
+    it("mix of parameters and literals") {
+      testQuery(
+        """SELECT * FROM
+          |nation JOIN region ON n_regionkey = r_regionkey
+          |JOIN supplier ON n_nationkey = s_nationkey
+          |WHERE s_suppkey = ? AND n_nationkey = 1 AND r_name = ?""".stripMargin)
+    }
+  }
+
   it("select from table without using any columns") {
     testQuery("select 1 from nation")
   }
