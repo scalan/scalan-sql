@@ -21,6 +21,9 @@ trait Iters extends ScalanDsl {
 
     def flatMap[B](f: Rep[Row => Iter[B]]): RIter[B] = delayInvoke
 
+    // variant of flatMap avoiding memory leaks in C++
+    def flatFlatMap[B](x: Rep[Row], varsToGlobalize: Seq[Rep[_]], resultIter: RIter[B]) = delayInvoke
+
     def flatMap0or1[B](f: Rep[Row => Opt[B]]): RIter[B] = delayInvoke
 
     def flatMap0or1U[B](f: Rep[((B, Row)) => Boolean]): RIter[B] = delayInvoke
@@ -113,9 +116,13 @@ trait Iters extends ScalanDsl {
     def fromBeginning(fakeDep: Rep[_]): RIter[Row] = delayInvoke
     def fromKeyWhile(keyValues: Rep[Array[Any]], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
 
+    def fromKeyWhileTh(keyValues: Rep[Array[Any] => Unit], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
+
     // if there are cases where value is guaranteed to exist, add argument for this
     // I don't think there are any at the moment
     def uniqueByKey(keyValues: Rep[Array[Any]]): RIter[Row] = delayInvoke
+
+    def uniqueByKeyTh(keyValues: Rep[Array[Any] => Unit]): RIter[Row] = delayInvoke
     // Could be implemented as below but we don't want to invoke it at the top level, only inside a join/subquery.
     // Instead done explicitly by UniqueIterRewriter, search for its usage.
 //    {
@@ -135,11 +142,15 @@ trait Iters extends ScalanDsl {
     // see comments for CursorIter#uniqueByKey
     def uniqueByRowid(rowid: Rep[Rowid]): RIter[Row] = delayInvoke
 
+    def uniqueByRowidTh(rowid: Rep[Thunk[Rowid]]): RIter[Row] = delayInvoke
+
     // TODO as for uniqueValue above
     /** The first part of the result may not be accessed if the second is false */
     def uniqueValueByRowid(rowid: Rep[Rowid]): ROpt[Row] = delayInvoke
 
     def fromRowidWhile(rowid: Rep[Rowid], takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
+
+    def fromRowidWhileTh(rowid: Rep[Thunk[Rowid]], takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
   }
 
   abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
@@ -321,7 +332,9 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
   override def getResultElem(receiver: Exp[_], m: Method, args: List[AnyRef]) = receiver.elem match {
     case iterElem: IterElem[_, _] =>
       m.getName match {
-        case "filter" | "takeWhile" | "fromBeginning" | "fromKeyWhile" | "fromRowidWhile" | "sort" | "sortBy" | "materialize" | "seekIndex" | "partialSort" | "byRowids" | "uniqueByKey" | "uniqueByRowid" =>
+        case "filter" | "takeWhile" | "fromBeginning" | "fromKeyWhile" | "fromKeyWhileTh" |
+             "fromRowidWhile" | "fromRowidWhileTh" | "sort" | "sortBy" | "materialize" |
+             "partialSort" | "byRowids" | "uniqueByKey" | "uniqueByKeyTh" | "uniqueByRowid" | "uniqueByRowidTh" =>
           val eRow = receiver.elem.asInstanceOf[IterElem[_, _]].eRow
           iterElement(eRow)
         case "map" =>
@@ -336,6 +349,9 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
           val f = args(0).asInstanceOf[Exp[_]]
           val eIterB = f.elem.asInstanceOf[FuncElem[_, _]].eRange
           eIterB
+        case "flatFlatMap" =>
+          val resultIter = args.last.asInstanceOf[Exp[_]]
+          resultIter.elem
         case "flatMap0or1" =>
           val f = args(0).asInstanceOf[Exp[_]]
           val eB = f.elem.asInstanceOf[FuncElem[_, _]].eRange.asInstanceOf[PairElem[_, _]].eSnd

@@ -3,7 +3,7 @@ package scalan.sql
 import java.lang.reflect.Method
 import scalan._
 import scala.reflect.runtime.universe._
-import scalan.sql.parser.SqlAST.{ComparisonOp, Index, SortDirection, Table}
+import scalan.sql.parser.SqlAST._
 import scala.reflect.runtime.universe.{WeakTypeTag, weakTypeTag}
 import scalan.meta.ScalanAst._
 
@@ -727,24 +727,36 @@ trait ItersExp extends ScalanExp with ItersDsl {
     }
 
     object fromBeginning {
-      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[_$1] forSome {type _$1}) forSome {type Row}] = d match {
+      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[_$2] forSome {type _$2}) forSome {type Row}] = d match {
         case MethodCall(receiver, method, Seq(fakeDep, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fromBeginning" =>
-          Some((receiver, fakeDep)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[_$1] forSome {type _$1}) forSome {type Row}]]
+          Some((receiver, fakeDep)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[_$2] forSome {type _$2}) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[_$1] forSome {type _$1}) forSome {type Row}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[_$2] forSome {type _$2}) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
     }
 
     object fromKeyWhile {
-      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$2] forSome {type _$2}) forSome {type Row}] = d match {
+      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}] = d match {
         case MethodCall(receiver, method, Seq(keyValues, operation, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fromKeyWhile" =>
-          Some((receiver, keyValues, operation, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$2] forSome {type _$2}) forSome {type Row}]]
+          Some((receiver, keyValues, operation, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$2] forSome {type _$2}) forSome {type Row}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]], ComparisonOp, Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
+    object fromKeyWhileTh {
+      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any] => Unit], ComparisonOp, Rep[Row => Boolean], Rep[_$4] forSome {type _$4}) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(keyValues, operation, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "fromKeyWhileTh" =>
+          Some((receiver, keyValues, operation, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any] => Unit], ComparisonOp, Rep[Row => Boolean], Rep[_$4] forSome {type _$4}) forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any] => Unit], ComparisonOp, Rep[Row => Boolean], Rep[_$4] forSome {type _$4}) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
@@ -757,6 +769,18 @@ trait ItersExp extends ScalanExp with ItersDsl {
         case _ => None
       }
       def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any]]) forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
+    object uniqueByKeyTh {
+      def unapply(d: Def[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any] => Unit]) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(keyValues, _*), _) if receiver.elem.isInstanceOf[CursorIterElem[_, _]] && method.getName == "uniqueByKeyTh" =>
+          Some((receiver, keyValues)).asInstanceOf[Option[(Rep[CursorIter[Row]], Rep[Array[Any] => Unit]) forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[CursorIter[Row]], Rep[Array[Any] => Unit]) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
@@ -890,6 +914,18 @@ trait ItersExp extends ScalanExp with ItersDsl {
       }
     }
 
+    object uniqueByRowidTh {
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]]) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(rowid, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "uniqueByRowidTh" =>
+          Some((receiver, rowid)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]]) forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]]) forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
     object uniqueValueByRowid {
       def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Rowid]) forSome {type Row}] = d match {
         case MethodCall(receiver, method, Seq(rowid, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "uniqueValueByRowid" =>
@@ -903,12 +939,24 @@ trait ItersExp extends ScalanExp with ItersDsl {
     }
 
     object fromRowidWhile {
-      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}] = d match {
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}] = d match {
         case MethodCall(receiver, method, Seq(rowid, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "fromRowidWhile" =>
-          Some((receiver, rowid, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}]]
+          Some((receiver, rowid, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$3] forSome {type _$3}) forSome {type Row}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
+    object fromRowidWhileTh {
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(rowid, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "fromRowidWhileTh" =>
+          Some((receiver, rowid, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
@@ -1239,6 +1287,18 @@ trait ItersExp extends ScalanExp with ItersDsl {
         case _ => None
       }
       def unapply(exp: Exp[_]): Option[(Rep[Iter[Row]], Rep[Row => Iter[B]]) forSome {type Row; type B}] = exp match {
+        case Def(d) => unapply(d)
+        case _ => None
+      }
+    }
+
+    object flatFlatMap {
+      def unapply(d: Def[_]): Option[(Rep[Iter[Row]], Rep[Row], Seq[Rep[_$1] forSome {type _$1}], RIter[B]) forSome {type Row; type B}] = d match {
+        case MethodCall(receiver, method, Seq(x, varsToGlobalize, resultIter, _*), _) if receiver.elem.isInstanceOf[IterElem[_, _]] && method.getName == "flatFlatMap" =>
+          Some((receiver, x, varsToGlobalize, resultIter)).asInstanceOf[Option[(Rep[Iter[Row]], Rep[Row], Seq[Rep[_$1] forSome {type _$1}], RIter[B]) forSome {type Row; type B}]]
+        case _ => None
+      }
+      def unapply(exp: Exp[_]): Option[(Rep[Iter[Row]], Rep[Row], Seq[Rep[_$1] forSome {type _$1}], RIter[B]) forSome {type Row; type B}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
