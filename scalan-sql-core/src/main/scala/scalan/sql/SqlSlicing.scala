@@ -412,10 +412,6 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
     case Clone(IsSliced(p, m)) =>
       Sliced(clone(p), m)
 
-
-    case Parameter(index, IsSliced(p, m), value) =>
-      Parameter(index, p, value)
-
     case AdvanceIter(IsSliced(iter: RIter[a] @unchecked, m), counter) =>
       Sliced(AdvanceIter(iter.asRep[Iter[a]], counter), m)
 

@@ -268,8 +268,7 @@ trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsD
       toPlatformString(x)
   }
 
-  // ctx ensures parameters are read inside lambdas only
-  case class Parameter(index: Int, ctx: Exp[_], value: Any) extends BaseDef[SqlValue]
+  case class Parameter(index: Int, value: Any) extends BaseDef[SqlValue]
 
   case class ExtraDeps(deps: Seq[Rep[_]]) extends BaseDef[Unit] {
     override def toString = s"ExtraDeps(${deps.mkString(", ")})"

@@ -991,18 +991,16 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       // non-null literals in queries are replaced by parameters, if
       // turnLiteralsIntoParameters was passed to sqlQueryExp. Only
       // in this case l.index will be Some(i) (see SqlGrammar#parseSelect).
-      val currentLambdaArg = this.currentLambdaArg(inputs)
       l.index match {
         case Some(i) =>
-          val param: Exp[SqlValue] = Parameter(i, currentLambdaArg, v)
+          val param: Exp[SqlValue] = Parameter(i, v)
           param.to(elem)
         case None =>
           toRep(v)(elem.asElem[Any])
       }
     case p: SqlAST.Parameter =>
-      val currentLambdaArg = this.currentLambdaArg(inputs)
       val i = p.index.getOrElse { !!!("Parameter doesn't have an index") }
-      Parameter(i, currentLambdaArg, null)
+      Parameter(i, null)
     case NullLiteral =>
       !!!("Nulls aren't supported")
     // if we ever support null, how to determine type here?
@@ -1059,7 +1057,7 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       // see https://www.sqlite.org/lang_datefunc.html
       // current support is very incomplete
       argExps(0) match {
-        case Def(Parameter(_, _, format: String)) =>
+        case Def(Parameter(_, format: String)) =>
           val timeString = argExps(1).asRep[String]
           format match {
             case "%Y" =>
