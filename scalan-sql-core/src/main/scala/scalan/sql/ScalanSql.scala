@@ -8,7 +8,7 @@ import scalan.sql.parser.SqlAST._
 /**
   * Use this traits for the top level scalan.sql extensions, customizations and overrides
   */
-trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with ItersDsl with RelationsDsl {
+trait ScalanSql extends ScalanDsl with SqlValues with ScannablesDsl with KernelInputsDsl with ItersDsl with RelationsDsl {
   implicit val DateElement: Elem[Date] = new BaseElem(new Date(0))
   implicit val DateOrdering: Ordering[Date] = Ordering.by(_.getTime)
 
@@ -117,10 +117,10 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
         case (_, eR: RelationElem[b, _]) =>
           val r1 = r.asRep[Relation[b]].onlyValue()
           widen(l, r1)
-        case (AnyElement, _) =>
-          LRHS(l, r, AnyElement)
-        case (_, AnyElement) =>
-          LRHS(l, r, AnyElement)
+        case (SqlValueElem, _) =>
+          LRHS(l.asRep[SqlValue], ToSqlValue(r), SqlValueElem)
+        case (_, SqlValueElem) =>
+          LRHS(ToSqlValue(l), r.asRep[SqlValue], SqlValueElem)
         case (DoubleElement, _) =>
           implicit val numR = getNumeric(eR)
           LRHS(l.asRep[Double], r.toDouble, DoubleElement)
@@ -220,14 +220,18 @@ trait ScalanSql extends ScalanDsl with ScannablesDsl with KernelInputsDsl with I
   // if overridden, castToRowid must be as well!
   protected def _initRowidElem(): Elem[_]
   lazy implicit val RowidElement = _initRowidElem().asElem[Rowid]
-  final def castToRowid(x: Rep[_]): Rep[Rowid] =
-    (if (rep_getElem(x) == RowidElement)
+  final def castToRowid(x: Rep[_]): Rep[Rowid] = {
+    val eX = rep_getElem(x)
+    (if (eX == RowidElement)
       x
+    else if (eX == SqlValueElem)
+      x.asRep[SqlValue].to[Rowid]
     else {
       val y = _castToRowid(x)
       assert(rep_getElem(y) == RowidElement)
       y
     }).asRep[Rowid]
+  }
   protected def _castToRowid(x: Rep[_]): Rep[_]
 }
 
@@ -265,8 +269,7 @@ trait ScalanSqlExp extends ScalanDslExp with ScannablesDslExp with KernelInputsD
   }
 
   // ctx ensures parameters are read inside lambdas only
-  case class Parameter[A](index: Int, ctx: Exp[_], value: Any)
-                         (implicit val selfType: Elem[A]) extends Def[A]
+  case class Parameter(index: Int, ctx: Exp[_], value: Any) extends BaseDef[SqlValue]
 
   case class ExtraDeps(deps: Seq[Rep[_]]) extends BaseDef[Unit] {
     override def toString = s"ExtraDeps(${deps.mkString(", ")})"

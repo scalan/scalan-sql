@@ -197,7 +197,7 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
           Seq[MarkedSym](x.marked(outMark))
 
         // Parameter doesn't really depend on its argument
-        case _: Parameter[_] | _: ExtraDeps =>
+        case _: Parameter | _: ExtraDeps =>
           Seq.empty
 
         case AdvanceIter(iter: RIter[a] @unchecked, _) =>
@@ -414,7 +414,7 @@ trait SqlSlicing extends Slicing { ctx: ScalanSqlExp =>
 
 
     case Parameter(index, IsSliced(p, m), value) =>
-      Parameter(index, p, value)(d.selfType)
+      Parameter(index, p, value)
 
     case AdvanceIter(IsSliced(iter: RIter[a] @unchecked, m), counter) =>
       Sliced(AdvanceIter(iter.asRep[Iter[a]], counter), m)

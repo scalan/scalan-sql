@@ -432,11 +432,11 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
       TableIter(table, scanId, direction, kernelInput)(ii.eRow)
 
     case CursorIterMethods.uniqueByKey(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value)))) =>
-      tableIter.asRep[TableIter[a]].uniqueByRowid(value.asRep[Rowid])
+      tableIter.asRep[TableIter[a]].uniqueByRowid(castToRowid(value))
     case CursorIterMethods.uniqueValueByKey(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value)))) =>
-      tableIter.asRep[TableIter[a]].uniqueValueByRowid(value.asRep[Rowid])
+      tableIter.asRep[TableIter[a]].uniqueValueByRowid(castToRowid(value))
     case CursorIterMethods.fromKeyWhile(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value))), op, f, fakeDep) =>
-      val rowid0 = value.asRep[Rowid]
+      val rowid0 = castToRowid(value)
       val rowid = op match {
         case Eq | GreaterEq | LessEq | Is =>
           rowid0

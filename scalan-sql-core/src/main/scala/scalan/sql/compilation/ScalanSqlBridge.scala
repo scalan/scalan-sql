@@ -994,14 +994,15 @@ def generateExpr(expr: Expression, inputs: ExprInputs): Exp[_] = ((expr match {
       val currentLambdaArg = this.currentLambdaArg(inputs)
       l.index match {
         case Some(i) =>
-          Parameter(i, currentLambdaArg, v)(elem)
+          val param: Exp[SqlValue] = Parameter(i, currentLambdaArg, v)
+          param.to(elem)
         case None =>
           toRep(v)(elem.asElem[Any])
       }
     case p: SqlAST.Parameter =>
       val currentLambdaArg = this.currentLambdaArg(inputs)
       val i = p.index.getOrElse { !!!("Parameter doesn't have an index") }
-      Parameter(i, currentLambdaArg, null)(AnyElement)
+      Parameter(i, currentLambdaArg, null)
     case NullLiteral =>
       !!!("Nulls aren't supported")
     // if we ever support null, how to determine type here?
