@@ -148,9 +148,9 @@ trait Iters extends ScalanDsl {
     /** The first part of the result may not be accessed if the second is false */
     def uniqueValueByRowid(rowid: Rep[Rowid]): ROpt[Row] = delayInvoke
 
-    def fromRowidWhile(rowid: Rep[Rowid], takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
+    def fromRowidWhile(rowid: Rep[Rowid], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
 
-    def fromRowidWhileTh(rowid: Rep[Thunk[Rowid]], takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
+    def fromRowidWhileTh(rowid: Rep[Thunk[Rowid]], operation: ComparisonOp, takeWhilePred: Rep[Row => Boolean], fakeDep: Rep[_]): RIter[Row] = delayInvoke
   }
 
   abstract class IndexIter[Row](val table: Rep[Table], val index: Rep[Index], val scanId: Rep[Int], val direction: Rep[SortDirection], val kernelInput: Rep[KernelInput])(implicit val eRow: Elem[Row]) extends CursorIter[Row]
@@ -436,16 +436,8 @@ trait ItersDslExp extends impl.ItersExp { self: ScalanSqlExp =>
     case CursorIterMethods.uniqueValueByKey(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value)))) =>
       tableIter.asRep[TableIter[a]].uniqueValueByRowid(castToRowid(value))
     case CursorIterMethods.fromKeyWhile(tableIter @ Def(_: TableIter[a]), Def(SymsArray(Seq(value))), op, f, fakeDep) =>
-      val rowid0 = castToRowid(value)
-      val rowid = op match {
-        case Eq | GreaterEq | LessEq | Is =>
-          rowid0
-        case Greater =>
-          rowid0 + rowidNum.fromInt(1)
-        case Less =>
-          rowid0 - rowidNum.fromInt(1)
-      }
-      tableIter.asRep[TableIter[a]].fromRowidWhile(rowid, f.asRep[a => Boolean], fakeDep)
+      val rowid = castToRowid(value)
+      tableIter.asRep[TableIter[a]].fromRowidWhile(rowid, op, f.asRep[a => Boolean], fakeDep)
 
     case ExpConditionalIter(Def(Const(b)), iter) =>
       if (b)

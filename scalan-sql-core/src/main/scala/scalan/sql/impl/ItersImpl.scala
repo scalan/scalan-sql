@@ -939,24 +939,24 @@ trait ItersExp extends ScalanExp with ItersDsl {
     }
 
     object fromRowidWhile {
-      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}] = d match {
-        case MethodCall(receiver, method, Seq(rowid, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "fromRowidWhile" =>
-          Some((receiver, rowid, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}]]
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], ComparisonOp, Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(rowid, operation, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "fromRowidWhile" =>
+          Some((receiver, rowid, operation, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Rowid], ComparisonOp, Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Rowid], ComparisonOp, Rep[Row => Boolean], Rep[_$5] forSome {type _$5}) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
     }
 
     object fromRowidWhileTh {
-      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}] = d match {
-        case MethodCall(receiver, method, Seq(rowid, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "fromRowidWhileTh" =>
-          Some((receiver, rowid, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}]]
+      def unapply(d: Def[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], ComparisonOp, Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}] = d match {
+        case MethodCall(receiver, method, Seq(rowid, operation, takeWhilePred, fakeDep, _*), _) if receiver.elem.isInstanceOf[TableIterElem[_]] && method.getName == "fromRowidWhileTh" =>
+          Some((receiver, rowid, operation, takeWhilePred, fakeDep)).asInstanceOf[Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], ComparisonOp, Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}]]
         case _ => None
       }
-      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}] = exp match {
+      def unapply(exp: Exp[_]): Option[(Rep[TableIter[Row]], Rep[Thunk[Rowid]], ComparisonOp, Rep[Row => Boolean], Rep[_$6] forSome {type _$6}) forSome {type Row}] = exp match {
         case Def(d) => unapply(d)
         case _ => None
       }
